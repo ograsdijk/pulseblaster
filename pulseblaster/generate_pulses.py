@@ -44,9 +44,10 @@ def minimum_duration_and_num_cycles(
         ]
         gcd_freqs = gcd(*[int(round(f * 10**n_digits)) for f in frequencies])
 
-        # if the gcd of all frequencies is larger than 1 they have a common divisor
-        # and the period of the smallest frequency is sufficient to fit all frequencies
-        if gcd_freqs > 1:
+        # if the gcd of all frequencies is equivalent to on of the frequencies
+        # they have a common divisor and the period of the smallest frequency is
+        # sufficient to fit all frequencies
+        if gcd_freqs in [int(round(f * 10**n_digits)) for f in frequencies]:
             # round largest period to nearest integer multiple ns_round ns
             duration = round_to_nearest_n_ns(
                 int(round(1 / min(frequencies) * 1e9)), ns_round
