@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "pulseblaster"
+version = "0.1.0"
+description = ""
+authors = ["ograsdijk <o.grasdijk@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+matplotlib = "^3.8"
+numpy = "^1.24.1"
+spinapi = "^3.2.2"
+tqdm = "^4.65"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.mypy.overrides]]
+module = [
+    "spinapi", "matplotlib.*", "tqdm"
+]
+ignore_missing_imports = true
