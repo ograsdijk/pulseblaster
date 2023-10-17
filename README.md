@@ -60,7 +60,7 @@ from pulseblaster import PulseBlaster
 pulse_gen = PulseBlaster(board_number = 0)
 
 # program the sequence on the device
-pulse_gen.program(sequence = sequence)
+pulse_gen.program(sequence = sequence.instructions)
 
 # start the sequence
 pulse_gen.start()
