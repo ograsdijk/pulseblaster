@@ -1,5 +1,6 @@
 from typing import Sequence
 
+import numpy as np
 from spinapi import (
     PULSE_PROGRAM,
     ns,
@@ -83,7 +84,8 @@ class PulseBlaster:
         pb_start_programming(PULSE_PROGRAM)
 
         for seq in sequence:
-            pb_inst_pbonly(seq.flags, seq.opcode, seq.inst_data, seq.duration * ns)
+            flags_int = np.sum([1 << i if v else 0 for i,v in enumerate(seq.flags)])
+            pb_inst_pbonly(flags_int, seq.opcode, seq.inst_data, seq.duration * ns)
         pb_stop_programming()
 
     def start(self) -> None:
