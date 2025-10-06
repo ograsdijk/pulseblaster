@@ -1,6 +1,13 @@
+"""
+Data structures for PulseBlaster pulse sequence generation.
+
+This module defines the core data structures used for representing pulses,
+signals, instructions, and sequences for the PulseBlaster hardware.
+"""
+
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
@@ -49,6 +56,20 @@ class Signal:
     active_high: bool = True
 
     def __post_init__(self):
+        # Validate inputs
+        if self.frequency <= 0:
+            raise ValueError(f"Frequency must be positive, got {self.frequency}")
+        if self.offset < 0:
+            raise ValueError(f"Offset must be non-negative, got {self.offset}")
+        if self.high < 0:
+            raise ValueError(f"High time must be non-negative, got {self.high}")
+        if not 0 <= self.duty_cycle <= 1:
+            raise ValueError(f"Duty cycle must be between 0 and 1, got {self.duty_cycle}")
+        if not self.channels:
+            raise ValueError("At least one channel must be specified")
+        if any(ch < 0 or ch > 23 for ch in self.channels):
+            raise ValueError(f"Channels must be between 0 and 23, got {self.channels}")
+
         if self.high == 0:
             self.high = int((1 / self.frequency * 1e9) * self.duty_cycle)
             self._duty_cycle_set = True
@@ -103,7 +124,7 @@ class Loop:
 
 def unroll_duration_flags(
     instructions: List[Instruction],
-) -> tuple[npt.NDArray[np.int_], npt.NDArray[np.int_], Optional[int]]:
+) -> Tuple[npt.NDArray[np.int_], npt.NDArray[np.int_], Optional[int]]:
     """
     generate the unrolled durations and flags that compose the entire instruction set,
     useful for plotting or inspecting the total pulse sequence.

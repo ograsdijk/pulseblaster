@@ -1,9 +1,25 @@
+"""
+Parser for PulseBlaster assembly code.
+
+This module provides functions to parse PulseBlaster assembly code
+and convert it to instruction sequences.
+"""
+
 import re
 
 from .data_structures import Instruction, InstructionSequence, Opcode
 
 
-def code_to_instructions(code: str):
+def code_to_instructions(code: str) -> InstructionSequence:
+    """
+    Convert PulseBlaster assembly code to an InstructionSequence.
+
+    Args:
+        code (str): PulseBlaster assembly code as a string
+
+    Returns:
+        InstructionSequence: parsed instruction sequence
+    """
     time_units = {"ns": 1, "us": 1e3, "ms": 1e6, "s": 1e9}
     sequence = [seq.replace("\t", "").strip() for seq in code.rstrip().split("\n")]
     sequence = [seq.split("//")[0] if "//" in seq else seq for seq in sequence]

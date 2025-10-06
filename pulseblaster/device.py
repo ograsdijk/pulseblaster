@@ -1,3 +1,10 @@
+"""
+PulseBlaster device interface for programming and controlling the hardware.
+
+This module provides a Python interface to the SpinCore PulseBlaster board
+for programming instruction sequences and controlling execution.
+"""
+
 from typing import Sequence
 
 import numpy as np
@@ -76,9 +83,15 @@ class PulseBlaster:
         Returns:
             int: status bit
         """
-        return pb_read_status
+        return pb_read_status()
 
     def program(self, sequence: Sequence[Instruction]) -> None:
+        """
+        Program the PulseBlaster with a sequence of instructions.
+
+        Args:
+            sequence (Sequence[Instruction]): sequence of instructions to program
+        """
         pb_reset()
         pb_core_clock(self.clock)
         pb_start_programming(PULSE_PROGRAM)
@@ -89,4 +102,9 @@ class PulseBlaster:
         pb_stop_programming()
 
     def start(self) -> None:
+        """Start the PulseBlaster program execution."""
         pb_start()
+
+    def reset(self) -> None:
+        """Reset the PulseBlaster board."""
+        pb_reset()

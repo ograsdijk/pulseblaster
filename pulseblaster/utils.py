@@ -1,3 +1,10 @@
+"""
+Utility functions for PulseBlaster pulse sequence generation.
+
+This module provides helper functions for rounding, channel management,
+and hardware detection.
+"""
+
 from typing import List
 
 from spinapi import pb_count_boards
@@ -6,6 +13,16 @@ from .data_structures import Signal
 
 
 def round_to_nearest_n_ns(value: int, ns_round: int) -> int:
+    """
+    Round a value to the nearest multiple of ns_round.
+
+    Args:
+        value (int): value to round [ns]
+        ns_round (int): round to nearest multiple of this value [ns]
+
+    Returns:
+        int: rounded value [ns]
+    """
     return int(round(value / ns_round) * ns_round)
 
 
@@ -30,7 +47,7 @@ def all_channels_off(pulses: List[Signal]) -> List[int]:
     return c
 
 
-def number_of_boards_connected(self) -> int:
+def number_of_boards_connected() -> int:
     """
     Get the number of PulseBlaster boards connected to the computer
 

@@ -1,3 +1,10 @@
+"""
+Plotting utilities for visualizing PulseBlaster pulse sequences.
+
+This module provides functions for plotting instruction sequences
+to visualize the timing and state of different channels.
+"""
+
 from typing import Optional
 
 import matplotlib.pyplot as plt
@@ -15,6 +22,20 @@ def plot_sequence(
     fontsize: int = 14,
     div: Optional[float] = None,
 ) -> tuple[Figure, Axes]:
+    """
+    Plot a PulseBlaster instruction sequence.
+
+    Args:
+        sequence (InstructionSequence): instruction sequence to plot
+        ax (Optional[Axes]): matplotlib axes to plot on. If None, creates new figure
+        offset (float): vertical offset between channels
+        fontsize (int): font size for labels and ticks
+        div (Optional[float]): time unit divisor (1e9 for s, 1e6 for ms, etc.).
+                               If None, automatically selects appropriate unit
+
+    Returns:
+        tuple[Figure, Axes]: matplotlib figure and axes objects
+    """
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
     else:

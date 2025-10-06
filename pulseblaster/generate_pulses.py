@@ -1,3 +1,10 @@
+"""
+Pulse sequence generation for PulseBlaster devices.
+
+This module provides functions for generating repeating pulse sequences
+with multiple frequencies and converting them to PulseBlaster instructions.
+"""
+
 import logging
 from copy import deepcopy
 from math import gcd, lcm
@@ -38,10 +45,11 @@ def minimum_duration_and_num_cycles(
     """
     # nearest integer multiple # ns to round to
     ns_round = n_round * min_instruction_len
+    # Get frequencies from signals
+    frequencies = [p.frequency for p in pulses] + [
+        p.frequency for p in masking_pulses
+    ]
     if duration is None:
-        frequencies = [p.frequency for p in pulses] + [
-            p.frequency for p in masking_pulses
-        ]
         gcd_freqs = gcd(*[int(round(f * 10**n_digits)) for f in frequencies])
 
         # if the gcd of all frequencies is equivalent to on of the frequencies
@@ -242,7 +250,7 @@ def generate_repeating_pulses(
     progress: bool = True,
 ) -> InstructionSequence:
     """
-    generate repeating signals bases in a
+    Generate repeating pulse signals for a PulseBlaster sequence.
 
     Args:
         signals (List[Signal]): signals in the sequence
@@ -250,12 +258,24 @@ def generate_repeating_pulses(
                                                             None.
         min_instruction_len (int, optional): minimum instruction length [ns]. Defaults
                                             to 20 ns.
+        nr_channels (int, optional): number of channels. Defaults to 24.
+        progress (bool, optional): show progress bar. Defaults to True.
 
     Returns:
-        RepeatingPulses: dataclass containing each instruction, time per instruction and
-                            channel state for each instruction
+        InstructionSequence: dataclass containing each instruction, time per instruction
+                            and channel state for each instruction
 
+    Raises:
+        ValueError: if signals list is empty or invalid parameters provided
     """
+    # Input validation
+    if not signals:
+        raise ValueError("At least one signal must be provided")
+    if min_instruction_len <= 0:
+        raise ValueError(f"min_instruction_len must be positive, got {min_instruction_len}")
+    if nr_channels <= 0:
+        raise ValueError(f"nr_channels must be positive, got {nr_channels}")
+    
     c: List[List[int]] = []
     t: List[int] = []
 
@@ -344,9 +364,9 @@ def generate_repeating_pulses(
             chs = [0] * nr_channels
             # last three channels are not individually controllable
             chs[-3:] = [1, 1, 1]
-            for instruction_cycle in channels_active:
-                if instruction_cycle in channels_masking_active:
-                    chs[instruction_cycle] = 1
+            for channel in channels_active:
+                if channel in channels_masking_active:
+                    chs[channel] = 1
             if not c:
                 t.append(min_instruction_len)
                 c.append(chs)
@@ -386,7 +406,7 @@ def generate_repeating_pulses(
                     c_[-3:] = [1, 1, 1]
                 c_[ch_inv] = 1
 
-    #
+    # Convert the time and channel state lists into Instructions
     pulse_sequence: List[Instruction] = []
     for t_, c_ in zip(t, c):
         pulse_sequence.append(
