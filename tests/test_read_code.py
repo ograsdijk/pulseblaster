@@ -237,6 +237,28 @@ start: 0xFFFFFF, 100ms, LOOP, 3
         with pytest.raises(ValueError, match="flags not in bits or hex"):
             code_to_instructions(code)
 
+    def test_unmatched_end_loop_raises(self):
+        """Test unmatched END_LOOP reports a clear error."""
+        code = """
+        0x000001, 100ns, END_LOOP
+        0x000000, 100ns, STOP
+        """
+        with pytest.raises(ValueError, match="END_LOOP without matching LOOP"):
+            code_to_instructions(code)
+
+    def test_unknown_label_in_inst_data_raises(self):
+        """Test unresolved labels in inst_data raise a clear error."""
+        code = "0x000001, 100ns, BRANCH, missing_label"
+        with pytest.raises(ValueError, match="Invalid inst_data"):
+            code_to_instructions(code)
+
+    def test_custom_flag_width(self):
+        """Test parsing instructions with a custom number of flags."""
+        code = "0x001F, 100ns, STOP"
+        sequence = code_to_instructions(code, nr_flags=5)
+        assert len(sequence.instructions[0].flags) == 5
+        assert sum(sequence.instructions[0].flags) == 5
+
     def test_label_resolution(self):
         """Test that labels are properly resolved to addresses."""
         code = """

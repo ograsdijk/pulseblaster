@@ -6,10 +6,10 @@ authors = [{ name = "ograsdijk", email = "o.grasdijk@gmail.com" }]
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = [
-    "matplotlib>=3.8",
-    "numpy>=1.24.1,<2",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.2,<3",
     "spinapi>=3.2.2,<4",
-    "tqdm>=4.65",
+    "tqdm>=4.67.3",
 ]
 
 [build-system]
@@ -24,11 +24,11 @@ ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
-    "mypy>=1.18.2",
-    "pytest>=8.4.2",
-    "pytest-cov>=4.1.0",
-    "black>=23.7.0",
-    "ruff>=0.0.282",
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "black>=26.1.0",
+    "ruff>=0.15.0",
 ]
 
 [tool.pytest.ini_options]

@@ -144,3 +144,15 @@ class TestAllChannelsOff:
         result = all_channels_off(signals)
         assert result[20] == 1
         assert result[-3:] == [1, 1, 1]
+
+    def test_custom_channel_count_with_no_reserved_channels(self):
+        """Test custom channel count without reserved channels."""
+        signals = [Signal(frequency=10, channels=[10], active_high=False)]
+        result = all_channels_off(signals, nr_channels=12, reserved_channels=0)
+        assert len(result) == 12
+        assert result[10] == 1
+
+    def test_reserved_channels_must_be_smaller_than_total_channels(self):
+        """Test invalid reserved channel configuration raises ValueError."""
+        with pytest.raises(ValueError, match="reserved_channels"):
+            all_channels_off([], nr_channels=4, reserved_channels=4)

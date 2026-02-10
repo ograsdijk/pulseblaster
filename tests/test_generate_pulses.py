@@ -285,6 +285,29 @@ class TestGenerateRepeatingPulses:
         with pytest.raises(ValueError, match="nr_channels must be positive"):
             generate_repeating_pulses(signals, nr_channels=-1, progress=False)
 
+    def test_validation_reserved_channels_too_large(self):
+        """Test that reserved channels must be smaller than total channel count."""
+        signals = [Signal(frequency=10, channels=[0])]
+        with pytest.raises(ValueError, match="reserved_channels"):
+            generate_repeating_pulses(
+                signals, nr_channels=4, reserved_channels=4, progress=False
+            )
+
+    def test_validation_signal_channel_exceeds_controllable_range(self):
+        """Test that requested channels fit in configured controllable channel range."""
+        signals = [Signal(frequency=10, channels=[21])]
+        with pytest.raises(ValueError, match="controllable range"):
+            generate_repeating_pulses(signals, nr_channels=24, reserved_channels=3, progress=False)
+
+    def test_validation_masking_channels_must_exist_in_signals(self):
+        """Test that masking channels must target channels present in signals."""
+        signals = [Signal(frequency=10, channels=[0])]
+        masking_signals = [Signal(frequency=10, channels=[1])]
+        with pytest.raises(ValueError, match="Masking channels must be a subset"):
+            generate_repeating_pulses(
+                signals, masking_signals=masking_signals, progress=False
+            )
+
     def test_custom_min_instruction_len(self):
         """Test with custom minimum instruction length."""
         signals = [Signal(frequency=10, channels=[0])]

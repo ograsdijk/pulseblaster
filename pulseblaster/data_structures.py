@@ -67,8 +67,8 @@ class Signal:
             raise ValueError(f"Duty cycle must be between 0 and 1, got {self.duty_cycle}")
         if not self.channels:
             raise ValueError("At least one channel must be specified")
-        if any(ch < 0 or ch > 23 for ch in self.channels):
-            raise ValueError(f"Channels must be between 0 and 23, got {self.channels}")
+        if any(ch < 0 for ch in self.channels):
+            raise ValueError(f"Channels must be non-negative, got {self.channels}")
 
         if self.high == 0:
             self.high = int((1 / self.frequency * 1e9) * self.duty_cycle)
@@ -138,9 +138,13 @@ def unroll_duration_flags(
             duration of each instruction, flag of each instruction and the index where
             the branch returns to if a BRANCH opcode is present.
     """
+    if not instructions:
+        raise ValueError("Instruction list cannot be empty")
+
     _duration: list[int] = []
     _flags: list[list[int]] = []
     _addresses: list[int] = []
+    branch_index: Optional[int] = None
 
     idx = 0
     # subroutines contains the indices of the JSR opcodes
@@ -148,7 +152,7 @@ def unroll_duration_flags(
     # loops contains the Loop dataclass, which contains the idx_start and
     # iterations_left of the loop
     loops: list[Loop] = []
-    while True:
+    while 0 <= idx < len(instructions):
         # load instruction
         instruction = instructions[idx]
 
@@ -156,55 +160,61 @@ def unroll_duration_flags(
         _duration.append(instruction.duration)
         _flags.append(instruction.flags)
         _addresses.append(idx)
-        _branch: Optional[int] = None
 
         # instructions with the following opcodes require some extra work
-        if instruction.opcode in [Opcode.LOOP, Opcode.END_LOOP, Opcode.RTS, Opcode.JSR]:
+        if instruction.opcode == Opcode.JSR:
             # JSR opcode is a jump to a subroutine at the index indicated in the opcode
             # until the RTS opcode is reached, when it will return to the JSR index + 1
-            if instruction.opcode == Opcode.JSR:
-                subroutines.append(idx)
-                idx = instruction.inst_data
-            # once RTS has been reached, grab the index and add 1 to proceed to the next
-            # instruction
-            elif instruction.opcode == Opcode.RTS:
-                idx = subroutines.pop() + 1
+            if not 0 <= instruction.inst_data < len(instructions):
+                raise ValueError(
+                    f"JSR target {instruction.inst_data} is outside instruction range"
+                )
+            subroutines.append(idx)
+            idx = instruction.inst_data
+        elif instruction.opcode == Opcode.RTS:
+            # once RTS has been reached, grab the index and add 1 to proceed to
+            # the next instruction
+            if not subroutines:
+                raise ValueError("RTS encountered without a matching JSR")
+            idx = subroutines.pop() + 1
+        elif instruction.opcode == Opcode.LOOP:
             # LOOP opcode loops through the instructions up to END_LOOP by ins_data
             # times
-            elif instruction.opcode == Opcode.LOOP:
-                # check if any loops have been entered or if the current loop was
-                # alread entered
-                if len(loops) == 0 or loops[-1].idx_start != idx:
-                    loops.append(
-                        Loop(idx_start=idx, iterations_left=instruction.inst_data)
-                    )
+            if instruction.inst_data <= 0:
+                raise ValueError(
+                    f"LOOP iterations must be positive, got {instruction.inst_data}"
+                )
+            # check if any loops have been entered or if the current loop was
+            # already entered
+            if len(loops) == 0 or loops[-1].idx_start != idx:
+                loops.append(Loop(idx_start=idx, iterations_left=instruction.inst_data))
+            idx += 1
+        elif instruction.opcode == Opcode.END_LOOP:
+            # grab the current loop
+            if not loops:
+                raise ValueError("END_LOOP encountered without a matching LOOP")
+            loop = loops[-1]
+            # decrease the iterations_left
+            loop.iterations_left -= 1
+            # break out if all iterations are complete
+            if loop.iterations_left == 0:
+                loops.pop()
                 idx += 1
-            elif instruction.opcode == Opcode.END_LOOP:
-                # grab the current loop
-                loop = loops[-1]
-                # decrease the iterations_left
-                loop.iterations_left -= 1
-                # break out if all iterations are complete
-                if loop.iterations_left == 0:
-                    loops.pop()
-                    idx += 1
-                else:
-                    idx = loop.idx_start
+            else:
+                idx = loop.idx_start
         # STOP opcode
         elif instruction.opcode == Opcode.STOP:
             break
         # BRANCH opcode
         elif instruction.opcode == Opcode.BRANCH:
-            branch_idx = instruction.inst_data
-            _branch = _addresses.index(branch_idx)
+            branch_target = instruction.inst_data
+            # branch target might not be visited yet in this unrolled pass
+            branch_index = _addresses.index(branch_target) if branch_target in _addresses else None
             break
         else:
             idx += 1
-        # stop iteration when idx exceeds the total number of instructions
-        if idx > len(instructions):
-            break
 
-    return np.asarray(_duration), np.asarray(_flags), _branch
+    return np.asarray(_duration), np.asarray(_flags), branch_index
 
 
 @dataclass(frozen=True)
@@ -212,7 +222,7 @@ class InstructionSequence:
     instructions: List[Instruction]
     duration: npt.NDArray[np.int_] = field(init=False)
     flags: npt.NDArray[np.int_] = field(init=False)
-    branch_index: int = field(init=False)
+    branch_index: Optional[int] = field(init=False)
 
     def __post_init__(self):
         duration, flags, branch_index = unroll_duration_flags(self.instructions)

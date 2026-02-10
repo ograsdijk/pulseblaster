@@ -107,13 +107,13 @@ class TestSignal:
 
     def test_signal_validation_invalid_channel_negative(self):
         """Test that negative channel number raises ValueError."""
-        with pytest.raises(ValueError, match="Channels must be between 0 and 23"):
+        with pytest.raises(ValueError, match="Channels must be non-negative"):
             Signal(frequency=10, channels=[-1])
 
-    def test_signal_validation_invalid_channel_too_high(self):
-        """Test that channel > 23 raises ValueError."""
-        with pytest.raises(ValueError, match="Channels must be between 0 and 23"):
-            Signal(frequency=10, channels=[24])
+    def test_signal_allows_high_channel_numbers(self):
+        """Signal channel validation is hardware-agnostic and allows high indices."""
+        signal = Signal(frequency=10, channels=[24])
+        assert signal.channels == [24]
 
     def test_signal_validation_high_exceeds_period(self):
         """Test that high time exceeding period raises ValueError."""

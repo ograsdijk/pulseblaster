@@ -11,6 +11,14 @@ Only tested with the PulseBlaster ESR-PRO USB 250 MHz.
 With `generate_repeating_pulses` a series of repeating pulses can be generated composed of `Signal`.
 Each `Signal` represents a pulse sequence with a frequency, offset and pulse high duration and channel(s). `generate_repeating_pulses` takes the frequency, offset and pulse high duration into account to find the minimum viable repeating sequence that corresponds to all the required signals.
 
+`generate_repeating_pulses` also accepts `nr_channels` and `reserved_channels`.
+Only channels in the range `0..(nr_channels - reserved_channels - 1)` are user-controllable.
+For hardware with fully controllable outputs, set `reserved_channels=0`.
+
+`masking_signals` act as periodic gating signals: their channels must be a subset of the
+base `signals` channels, and they enable the associated base channels only during the
+mask pulse high window.
+
 ```python
 import matplotlib.pyplot as plt
 from pulseblaster import Signal, generate_pulses, plot_sequence
@@ -94,6 +102,9 @@ start: 0xFFFFFF, 100ms, LOOP, 3
 """
 
 sequence = code_to_instructions(code)
+
+# If your board uses a different instruction flag width:
+# sequence = code_to_instructions(code, nr_flags=32)
 
 plot_sequence(sequence)
 

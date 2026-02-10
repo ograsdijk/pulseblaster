@@ -8,12 +8,12 @@ with multiple frequencies and converting them to PulseBlaster instructions.
 import logging
 from copy import deepcopy
 from math import gcd, lcm
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple, Union
 
 import tqdm
 
 from .data_structures import Instruction, InstructionSequence, Opcode, Pulse, Signal
-from .utils import all_channels_off, round_to_nearest_n_ns
+from .utils import all_channels_off, round_to_nearest_n_ns, set_reserved_channels
 
 
 def minimum_duration_and_num_cycles(
@@ -86,7 +86,7 @@ def minimum_duration_and_num_cycles(
             if lcm_periods >= t_max:
                 raise ValueError(
                     "lcm timespan of input frequencies is too large,"
-                    f" {lcm_periods*1e9:.1e} s"
+                    f" {lcm_periods*1e-9:.1e} s"
                 )
             # total sequence duration in ns
             duration = lcm_periods
@@ -173,7 +173,7 @@ def calculate_resets(
     pulse_elapsed_cycles: List[int],
     pulses_cycle_units: List[Pulse],
     instruction_cycle: int,
-) -> Tuple[List[int], List[int]]:
+) -> Tuple[Set[int], List[int]]:
     """
     Calculate if a given signal has elapsed a full period and needs to be reset.
 
@@ -188,14 +188,13 @@ def calculate_resets(
                                         a list of elapsed time per signal
                                         [minimum instruction cycles]
     """
-    channels_active: List[int] = []
+    channels_active: Set[int] = set()
     # cycle through the pulses
     for idx_pulse, pulse in enumerate(pulses_cycle_units):
         # check elapsed time is >= pulse offset
         if instruction_cycle >= pulse.offset:
             if pulse_elapsed_cycles[idx_pulse] < pulse.high:
-                for ch in pulse.channels:
-                    channels_active.append(ch)
+                channels_active.update(pulse.channels)
             pulse_elapsed_cycles[idx_pulse] += 1
             pulse_elapsed_cycles[idx_pulse] = int(
                 pulse_elapsed_cycles[idx_pulse] % pulse.period
@@ -205,10 +204,10 @@ def calculate_resets(
 
 def calculate_resets_masking(
     masking_pulse_elapsed_cycles: List[int],
-    pulses_cycle_units: List[Pulse],
+    base_channels: Union[Set[int], List[Pulse]],
     masking_pulses_cycle_units: List[Pulse],
     instruction_cycle: int,
-) -> Tuple[List[int], List[int]]:
+) -> Tuple[Set[int], List[int]]:
     """
     Calculate if a given masking signal has elapsed a full period and needs to be reset.
 
@@ -216,7 +215,8 @@ def calculate_resets_masking(
         masking_pulse_elapsed_cycles (List[int]): elapsed time [minimum instruction
                                                     cycles] since the start of each
                                                     masking signal
-        pulses_cycle_units (List[Pulse]): signals in units [minimum instruction cycles]
+        base_channels (Set[int] | List[Pulse]): set of channels present in the
+                                                base signal set or the pulse list
         masking_pulses_cycle_units (List[Pulse]): masking signals in units
                                                     [minimum instruction cycles]
         instruction_cycle (int): current instruction cycle
@@ -226,14 +226,14 @@ def calculate_resets_masking(
                                         list of elapsed time per signal
                                         [minimum instruction cycles]
     """
-    channels_masking_active = [
-        p for pulse in pulses_cycle_units for p in pulse.channels
-    ]
+    if isinstance(base_channels, set):
+        channels_masking_active = set(base_channels)
+    else:
+        channels_masking_active = {ch for pulse in base_channels for ch in pulse.channels}
     for idx_pulse, pulse in enumerate(masking_pulses_cycle_units):
         if instruction_cycle >= pulse.offset:
             if masking_pulse_elapsed_cycles[idx_pulse] >= pulse.high:
-                for ch in pulse.channels:
-                    channels_masking_active.remove(ch)
+                channels_masking_active.difference_update(pulse.channels)
             masking_pulse_elapsed_cycles[idx_pulse] += 1
             masking_pulse_elapsed_cycles[idx_pulse] = int(
                 masking_pulse_elapsed_cycles[idx_pulse] % pulse.period
@@ -247,6 +247,7 @@ def generate_repeating_pulses(
     masking_signals: Optional[List[Signal]] = None,
     min_instruction_len: int = 20,
     nr_channels: int = 24,
+    reserved_channels: int = 3,
     progress: bool = True,
 ) -> InstructionSequence:
     """
@@ -259,6 +260,8 @@ def generate_repeating_pulses(
         min_instruction_len (int, optional): minimum instruction length [ns]. Defaults
                                             to 20 ns.
         nr_channels (int, optional): number of channels. Defaults to 24.
+        reserved_channels (int, optional): number of trailing channels that mirror
+                                            overall channel state. Defaults to 3.
         progress (bool, optional): show progress bar. Defaults to True.
 
     Returns:
@@ -275,12 +278,34 @@ def generate_repeating_pulses(
         raise ValueError(f"min_instruction_len must be positive, got {min_instruction_len}")
     if nr_channels <= 0:
         raise ValueError(f"nr_channels must be positive, got {nr_channels}")
-    
+    if reserved_channels < 0:
+        raise ValueError(f"reserved_channels must be non-negative, got {reserved_channels}")
+    if reserved_channels >= nr_channels:
+        raise ValueError(
+            f"reserved_channels ({reserved_channels}) must be less than nr_channels ({nr_channels})"
+        )
+
     c: List[List[int]] = []
     t: List[int] = []
 
     if masking_signals is None:
         masking_signals = []
+
+    signal_channels = {ch for signal in signals for ch in signal.channels}
+    masking_channels = {ch for signal in masking_signals for ch in signal.channels}
+    max_controllable_channel = nr_channels - reserved_channels - 1
+    highest_requested_channel = max(signal_channels | masking_channels, default=-1)
+    if highest_requested_channel > max_controllable_channel:
+        raise ValueError(
+            "Signal channels exceed the configured controllable range "
+            f"0..{max_controllable_channel}. Got channel {highest_requested_channel}."
+        )
+    if not masking_channels.issubset(signal_channels):
+        invalid_channels = sorted(masking_channels.difference(signal_channels))
+        raise ValueError(
+            f"Masking channels must be a subset of signal channels. "
+            f"Invalid masking channels: {invalid_channels}"
+        )
 
     # calculating the minimum duration required to perform all pulses
     duration, nr_cycles, frequencies_rescaled = minimum_duration_and_num_cycles(
@@ -336,6 +361,9 @@ def generate_repeating_pulses(
     # generating the pulseblaster instructions
     pulse_elapsed_cycles = [0] * len(signals)
     masking_pulse_elapsed_cycles = [0] * len(masking_signals)
+    active_low_channels = {
+        ch for signal in signals if not signal.active_high for ch in signal.channels
+    }
 
     for instruction_cycle in tqdm.tqdm(
         range(nr_cycles), disable=not progress, desc="Instruction cycles"
@@ -355,56 +383,36 @@ def generate_repeating_pulses(
             masking_pulse_elapsed_cycles,
         ) = calculate_resets_masking(
             masking_pulse_elapsed_cycles,
-            pulses_cycle_units,
+            signal_channels,
             masking_pulses_cycle_units,
             instruction_cycle,
         )
 
-        if channels_active:
-            chs = [0] * nr_channels
-            # last three channels are not individually controllable
-            chs[-3:] = [1, 1, 1]
-            for channel in channels_active:
-                if channel in channels_masking_active:
-                    chs[channel] = 1
-            if not c:
-                t.append(min_instruction_len)
-                c.append(chs)
-            else:
-                if c[-1] == chs:
-                    t[-1] += min_instruction_len
-                else:
-                    t.append(min_instruction_len)
-                    c.append(chs)
-        else:
-            if not c:
-                c.append([0] * 24)
-                t.append(min_instruction_len)
-            else:
-                if c[-1] == [0] * 24:
-                    t[-1] += min_instruction_len
-                else:
-                    c.append([0] * 24)
-                    t.append(min_instruction_len)
+        gated_channels = channels_active.intersection(channels_masking_active)
+        chs = [0] * nr_channels
+        for channel in gated_channels:
+            chs[channel] = 1
 
-    # invert active high & low for channels that are active low
-    channels_inverted = [
-        p for pulse in signals for p in pulse.channels if not pulse.active_high
-    ]
+        # invert active state for channels that are configured active low
+        for channel in active_low_channels:
+            chs[channel] = 0 if chs[channel] else 1
+
+        set_reserved_channels(chs, reserved_channels)
+
+        if not c:
+            t.append(min_instruction_len)
+            c.append(chs)
+        elif c[-1] == chs:
+            t[-1] += min_instruction_len
+        else:
+            t.append(min_instruction_len)
+            c.append(chs)
 
     # set all channels low for the last instruction, which will branch back to the first
     # instruction so as to repeat the pulse sequence
-    channels_off = all_channels_off(signals)
-    for c_ in c:
-        for ch_inv in channels_inverted:
-            if c_[ch_inv]:
-                c_[ch_inv] = 0
-                if c_[:20] == [0] * 20:
-                    c_[-3:] = [0, 0, 0]
-            else:
-                if c_ == [0] * 24:
-                    c_[-3:] = [1, 1, 1]
-                c_[ch_inv] = 1
+    channels_off = all_channels_off(
+        signals, nr_channels=nr_channels, reserved_channels=reserved_channels
+    )
 
     # Convert the time and channel state lists into Instructions
     pulse_sequence: List[Instruction] = []

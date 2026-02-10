@@ -21,7 +21,8 @@ def plot_sequence(
     offset: float = 1.3,
     fontsize: int = 14,
     div: Optional[float] = None,
-) -> tuple[Figure, Axes]:
+    exclude_channels: Optional[list[int]] = None,
+) -> tuple[Optional[Figure], Axes]:
     """
     Plot a PulseBlaster instruction sequence.
 
@@ -32,9 +33,10 @@ def plot_sequence(
         fontsize (int): font size for labels and ticks
         div (Optional[float]): time unit divisor (1e9 for s, 1e6 for ms, etc.).
                                If None, automatically selects appropriate unit
+        exclude_channels (Optional[list[int]]): channels to hide from the plot
 
     Returns:
-        tuple[Figure, Axes]: matplotlib figure and axes objects
+        tuple[Optional[Figure], Axes]: matplotlib figure and axes objects
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -43,17 +45,28 @@ def plot_sequence(
 
     c = sequence.flags.copy()
 
-    select = np.where(np.sum(c[:, :21], axis=0) != 0)[0]
+    select = np.where(np.sum(c, axis=0) != 0)[0]
+    if exclude_channels:
+        exclude_set = set(exclude_channels)
+        nr_channels = c.shape[1]
+        invalid_channels = sorted(
+            ch for ch in exclude_set if ch < 0 or ch >= nr_channels
+        )
+        if invalid_channels:
+            raise ValueError(
+                f"exclude_channels must be in range 0..{nr_channels - 1}, "
+                f"got {invalid_channels}"
+            )
+        select = np.asarray([ch for ch in select if ch not in exclude_set], dtype=int)
 
     c = c[:, select]
     c = np.append(np.zeros((1, len(select))), c, axis=0)
 
-    # get time units
-    # convert to 64 bits because 32 bit signed integers overflow when the # ns exceeds
-    # ~2.14 s, 64 bit integers overflow for ~292 years worth of ns
+    # convert to 64 bits because 32-bit signed integers overflow when the # ns exceeds
+    # ~2.14 s, while 64-bit integers overflow for ~292 years worth of ns.
     t = np.append([0], sequence.duration).astype(np.int64)
-    time_units = {1e9: "s", 1e6: "ms", 1e3: "μs", 1: "ns"}
-    tmax = sum(t)
+    time_units = {1e9: "s", 1e6: "ms", 1e3: "us", 1: "ns"}
+    tmax = int(np.sum(t))
     if div is None:
         for _div in [1e9, 1e6, 1e3, 1]:
             if tmax / _div >= 1:
@@ -61,14 +74,13 @@ def plot_sequence(
     else:
         _div = div
 
-    for idc, c in enumerate(c.T):
-        ax.step(
-            np.cumsum(t.astype(np.int64)) / _div, c + offset * idc, lw=3, where="pre"
-        )
+    cumulative_t = np.cumsum(t.astype(np.int64))
+    for idc, channel_values in enumerate(c.T):
+        ax.step(cumulative_t / _div, channel_values + offset * idc, lw=3, where="pre")
 
     if sequence.branch_index is not None:
         ax.axvline(
-            np.cumsum(t.astype(np.int64))[sequence.branch_index] / _div,
+            cumulative_t[sequence.branch_index] / _div,
             lw=3,
             label="branch",
             color="k",
@@ -84,6 +96,7 @@ def plot_sequence(
     ax.tick_params(axis="both", which="minor", labelsize=fontsize * 0.8)
     ax.xaxis.get_offset_text().set_size(fontsize)
 
-    ax.legend(fontsize=fontsize)
+    if sequence.branch_index is not None:
+        ax.legend(fontsize=fontsize)
 
     return fig, ax

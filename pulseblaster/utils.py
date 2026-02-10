@@ -26,24 +26,47 @@ def round_to_nearest_n_ns(value: int, ns_round: int) -> int:
     return int(round(value / ns_round) * ns_round)
 
 
-def all_channels_off(pulses: List[Signal]) -> List[int]:
+def set_reserved_channels(flags: List[int], reserved_channels: int) -> None:
     """
-    Generate the instruction for all channels off
+    Set reserved trailing channels to reflect whether any non-reserved channel is high.
+
+    Args:
+        flags (List[int]): channel-state flags, modified in-place
+        reserved_channels (int): number of trailing reserved channels
+    """
+    if reserved_channels <= 0:
+        return
+    if reserved_channels >= len(flags):
+        raise ValueError(
+            f"reserved_channels ({reserved_channels}) must be less than total channels ({len(flags)})"
+        )
+
+    reserved_value = 1 if any(flags[:-reserved_channels]) else 0
+    flags[-reserved_channels:] = [reserved_value] * reserved_channels
+
+
+def all_channels_off(
+    pulses: List[Signal],
+    nr_channels: int = 24,
+    reserved_channels: int = 3,
+) -> List[int]:
+    """
+    Generate the instruction for all channels off.
 
     Args:
         pulses (List[Signal]): signals composing sequence
+        nr_channels (int): total number of channels represented in flags
+        reserved_channels (int): trailing channels that mirror overall state
 
     Returns:
         List[int]: channel state
     """
-    c = [0] * 24
+    c = [0] * nr_channels
     for pulse in pulses:
         if not pulse.active_high:
             for ch in pulse.channels:
                 c[ch] = 1
-            # last 3 'channels' are not separately controllable, see manual
-            # need to be high
-            c[-3:] = [1, 1, 1]
+    set_reserved_channels(c, reserved_channels)
     return c
 
 
