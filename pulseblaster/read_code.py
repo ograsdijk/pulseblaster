@@ -6,8 +6,20 @@ and convert it to instruction sequences.
 """
 
 import re
+from dataclasses import dataclass
 
 from .data_structures import Instruction, InstructionSequence, Opcode
+from .validation import ESR_PRO_250, BoardProfile, validate_sequence
+
+
+@dataclass
+class _ParsedInstruction:
+    label: str
+    flags: list[int]
+    duration: int
+    opcode: Opcode
+    inst_data_str: str
+    line_number: int
 
 
 def _parse_duration(duration_token: str, line_number: int) -> int:
@@ -31,24 +43,24 @@ def _parse_duration(duration_token: str, line_number: int) -> int:
     return int(value * time_units[unit])
 
 
-def code_to_instructions(code: str, nr_flags: int = 24) -> InstructionSequence:
+def code_to_instructions(
+    code: str,
+    profile: BoardProfile = ESR_PRO_250,
+) -> InstructionSequence:
     """
     Convert PulseBlaster assembly code to an InstructionSequence.
 
     Args:
         code (str): PulseBlaster assembly code as a string
-        nr_flags (int): number of output flag bits in each instruction
+        profile (BoardProfile): board profile used to parse and validate flags
 
     Returns:
         InstructionSequence: parsed instruction sequence
     """
-    if nr_flags <= 0:
-        raise ValueError(f"nr_flags must be positive, got {nr_flags}")
-
     addresses: dict[str, int] = {}
-    sequence_processed: list[dict[str, object]] = []
+    sequence_processed: list[_ParsedInstruction] = []
 
-    for line_number, raw_line in enumerate(code.rstrip().split("\n"), start=1):
+    for line_number, raw_line in enumerate(code.rstrip().splitlines(), start=1):
         stripped = raw_line.split("//", maxsplit=1)[0].replace("\t", "").strip()
         if not stripped:
             continue
@@ -85,12 +97,12 @@ def code_to_instructions(code: str, nr_flags: int = 24) -> InstructionSequence:
         else:
             raise ValueError(f"flags not in bits or hex (line {line_number})")
 
-        max_value = 1 << nr_flags
+        max_value = 1 << profile.flag_bits
         if not 0 <= tmp < max_value:
             raise ValueError(
-                f"Flags value '{first_token}' exceeds {nr_flags} bits at line {line_number}"
+                f"Flags value '{first_token}' exceeds {profile.flag_bits} bits at line {line_number}"
             )
-        flags = [tmp >> i & 1 for i in range(nr_flags)]
+        flags = [tmp >> i & 1 for i in range(profile.flag_bits)]
 
         # get the duration of each instruction
         duration = _parse_duration(seq_str[1], line_number)
@@ -109,38 +121,38 @@ def code_to_instructions(code: str, nr_flags: int = 24) -> InstructionSequence:
         inst_data_str = seq_str[3].strip() if len(seq_str) > 3 else "0"
 
         sequence_processed.append(
-            {
-                "label": label,
-                "flags": flags,
-                "duration": duration,
-                "opcode": opcode,
-                "inst_data_str": inst_data_str,
-                "line_number": line_number,
-            }
+            _ParsedInstruction(
+                label=label,
+                flags=flags,
+                duration=duration,
+                opcode=opcode,
+                inst_data_str=inst_data_str,
+                line_number=line_number,
+            )
         )
 
     nested: list[int] = []
     for idx, seq in enumerate(sequence_processed):
-        if seq["opcode"] == Opcode.LOOP:
+        if seq.opcode == Opcode.LOOP:
             nested.append(idx)
-        elif seq["opcode"] == Opcode.END_LOOP:
+        elif seq.opcode == Opcode.END_LOOP:
             if not nested:
                 raise ValueError(
-                    f"END_LOOP without matching LOOP at line {seq['line_number']}"
+                    f"END_LOOP without matching LOOP at line {seq.line_number}"
                 )
-            seq["inst_data_str"] = str(nested.pop())
+            seq.inst_data_str = str(nested.pop())
     if nested:
         start_idx = nested[-1]
         raise ValueError(
             f"LOOP without matching END_LOOP at line "
-            f"{sequence_processed[start_idx]['line_number']}"
+            f"{sequence_processed[start_idx].line_number}"
         )
 
     # convert to a sequence of Instructions
     sequence_instructions: list[Instruction] = []
     for seq in sequence_processed:
         # set inst_data to integer addresses
-        inst_data_str = str(seq["inst_data_str"])
+        inst_data_str = seq.inst_data_str
         if inst_data_str in addresses:
             inst_data = addresses[inst_data_str]
         else:
@@ -148,17 +160,18 @@ def code_to_instructions(code: str, nr_flags: int = 24) -> InstructionSequence:
                 inst_data = int(inst_data_str)
             except ValueError as exc:
                 raise ValueError(
-                    f"Invalid inst_data '{inst_data_str}' at line {seq['line_number']}"
+                    f"Invalid inst_data '{inst_data_str}' at line {seq.line_number}"
                 ) from exc
 
         sequence_instructions.append(
             Instruction(
-                label=str(seq["label"]),
-                flags=list(seq["flags"]),
-                duration=int(seq["duration"]),
-                opcode=seq["opcode"],  # type: ignore[arg-type]
+                label=seq.label,
+                flags=seq.flags,
+                duration=seq.duration,
+                opcode=seq.opcode,
                 inst_data=inst_data,
             )
         )
 
+    validate_sequence(sequence_instructions, profile=profile)
     return InstructionSequence(sequence_instructions)

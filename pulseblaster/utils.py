@@ -5,8 +5,6 @@ This module provides helper functions for rounding, channel management,
 and hardware detection.
 """
 
-from typing import List
-
 from spinapi import pb_count_boards
 
 from .data_structures import Signal
@@ -26,7 +24,7 @@ def round_to_nearest_n_ns(value: int, ns_round: int) -> int:
     return int(round(value / ns_round) * ns_round)
 
 
-def set_reserved_channels(flags: List[int], reserved_channels: int) -> None:
+def set_reserved_channels(flags: list[int], reserved_channels: int) -> None:
     """
     Set reserved trailing channels to reflect whether any non-reserved channel is high.
 
@@ -46,10 +44,10 @@ def set_reserved_channels(flags: List[int], reserved_channels: int) -> None:
 
 
 def all_channels_off(
-    pulses: List[Signal],
+    pulses: list[Signal],
     nr_channels: int = 24,
     reserved_channels: int = 3,
-) -> List[int]:
+) -> list[int]:
     """
     Generate the instruction for all channels off.
 

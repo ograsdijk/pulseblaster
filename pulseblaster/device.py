@@ -1,11 +1,6 @@
-"""
-PulseBlaster device interface for programming and controlling the hardware.
+"""PulseBlaster device interface for programming and controlling the hardware."""
 
-This module provides a Python interface to the SpinCore PulseBlaster board
-for programming instruction sequences and controlling execution.
-"""
-
-from typing import Sequence
+from collections.abc import Sequence
 
 from spinapi import (
     PULSE_PROGRAM,
@@ -25,16 +20,17 @@ from spinapi import (
 )
 
 from .data_structures import Instruction
+from .validation import ESR_PRO_250, BoardProfile, validate_sequence
 
 
 class PulseBlaster:
     def __init__(
         self,
         board_number: int,
-        clock: int = 250,
+        profile: BoardProfile = ESR_PRO_250,
     ):
         self.board_number = board_number
-        self._clock = clock
+        self.profile = profile
 
         self._check_return_code(
             pb_select_board(board_number),
@@ -68,14 +64,14 @@ class PulseBlaster:
         return flags_int
 
     @property
-    def clock(self) -> int:
+    def clock(self) -> float:
         """
         Clock speed [MHz]
 
         Returns:
             int: clock speed [MHz]
         """
-        return self._clock
+        return self.profile.clock_mhz
 
     @property
     def firmware_id(self) -> int:
@@ -116,6 +112,8 @@ class PulseBlaster:
         Args:
             sequence (Sequence[Instruction]): sequence of instructions to program
         """
+        self.validate_program(sequence, profile=self.profile)
+
         self._check_return_code(pb_reset(), "reset PulseBlaster board")
         self._check_return_code(pb_core_clock(self.clock), f"set core clock to {self.clock} MHz")
         self._check_return_code(pb_start_programming(PULSE_PROGRAM), "start pulse programming")
@@ -138,3 +136,11 @@ class PulseBlaster:
     def reset(self) -> None:
         """Reset the PulseBlaster board."""
         self._check_return_code(pb_reset(), "reset PulseBlaster board")
+
+    @staticmethod
+    def validate_program(
+        sequence: Sequence[Instruction],
+        profile: BoardProfile = ESR_PRO_250,
+    ) -> None:
+        """Validate instructions with the same profile used before programming."""
+        validate_sequence(sequence, profile=profile)

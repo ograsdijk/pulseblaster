@@ -8,23 +8,23 @@ with multiple frequencies and converting them to PulseBlaster instructions.
 import logging
 from copy import deepcopy
 from math import gcd, lcm
-from typing import List, Optional, Set, Tuple, Union
 
 import tqdm
 
 from .data_structures import Instruction, InstructionSequence, Opcode, Pulse, Signal
-from .utils import all_channels_off, round_to_nearest_n_ns, set_reserved_channels
+from .utils import round_to_nearest_n_ns
+from .validation import ESR_PRO_250, BoardProfile, set_control_mode, validate_sequence
 
 
 def minimum_duration_and_num_cycles(
-    pulses: List[Signal],
-    masking_pulses: List[Signal],
-    duration: Optional[int],
+    pulses: list[Signal],
+    masking_pulses: list[Signal],
+    duration: int | None,
     min_instruction_len: int,
     n_round: int = 5_000,
     n_digits: int = 4,
     t_max: int = int(10e9),
-) -> Tuple[int, int, List[float]]:
+) -> tuple[int, int, list[float]]:
     """
     Calculate the minimum duration of the sequence of signals and the number of
     instruction cycles required
@@ -57,22 +57,31 @@ def minimum_duration_and_num_cycles(
         # sufficient to fit all frequencies
         if gcd_freqs in [int(round(f * 10**n_digits)) for f in frequencies]:
             # round largest period to nearest integer multiple ns_round ns
-            duration = round_to_nearest_n_ns(
-                int(round(1 / min(frequencies) * 1e9)), ns_round
+            duration = max(
+                min_instruction_len,
+                round_to_nearest_n_ns(int(round(1 / min(frequencies) * 1e9)), ns_round),
             )
             fmin = min(frequencies)
             # convert the periods corresponding to the nearest
             # integer multiple ns_round to frequencies
-            frequencies = [
-                1e9
-                / round_to_nearest_n_ns(
-                    int(round(duration / (f / fmin))), min_instruction_len
+            periods = [
+                max(
+                    min_instruction_len,
+                    round_to_nearest_n_ns(
+                        int(round(duration / (f / fmin))), min_instruction_len
+                    ),
                 )
                 for f in frequencies
             ]
+            frequencies = [1e9 / p for p in periods]
         else:
             #
             periods = [int(round(1 / f * 1e9)) for f in frequencies]
+            if any(period < min_instruction_len for period in periods):
+                raise ValueError(
+                    "Signal period is shorter than the profile minimum instruction "
+                    f"length ({min_instruction_len} ns)"
+                )
             # clean up periods to nearest integer multiples of the minimum instruction
             # length
             periods = [p - p % min_instruction_len for p in periods]
@@ -97,8 +106,8 @@ def minimum_duration_and_num_cycles(
 
 
 def pulses_convert_to_instruction_length(
-    signals: List[Signal], min_instruction_len: int
-) -> Tuple[List[Pulse], List[int]]:
+    signals: list[Signal], min_instruction_len: int
+) -> tuple[list[Pulse], list[int]]:
     """
     Convert the signals from durations of ns to durations in units of instruction
     lengths
@@ -111,8 +120,8 @@ def pulses_convert_to_instruction_length(
         Tuple[List[Pulse], List[int]]: tuple of signals in units of minimum instruction
                                         lengths and tuple of instruction cycles
     """
-    pulses_cycle_units: List[Pulse] = []
-    instruction_cycles: List[int] = []
+    pulses_cycle_units: list[Pulse] = []
+    instruction_cycles: list[int] = []
     for signal in signals:
         f = int(round(1 / signal.frequency / (min_instruction_len * 1e-9)))
         o = int(round(signal.offset / min_instruction_len))
@@ -120,6 +129,16 @@ def pulses_convert_to_instruction_length(
             h = int(round(f * signal.duty_cycle))
         else:
             h = int(round(signal.high / min_instruction_len))
+        if f <= 0:
+            raise ValueError(
+                "Signal period is shorter than the profile minimum instruction "
+                f"length ({min_instruction_len} ns)"
+            )
+        if h <= 0:
+            raise ValueError(
+                "Signal high time is shorter than the profile minimum instruction "
+                f"length ({min_instruction_len} ns)"
+            )
         instruction_cycles.append(f)
         instruction_cycles.append(h)
         if o != 0:
@@ -138,9 +157,9 @@ def pulses_convert_to_instruction_length(
 
 def rescale_pulses(
     gcd_cycles: int,
-    pulses_cycle_units: List[Pulse],
-    masking_pulses_cycle_units: List[Pulse],
-) -> Tuple[List[Pulse], List[Pulse]]:
+    pulses_cycle_units: list[Pulse],
+    masking_pulses_cycle_units: list[Pulse],
+) -> tuple[list[Pulse], list[Pulse]]:
     """
     Rescale signals to the greatest common denominator of minimum instruction cycles
     required to generate the sequence
@@ -170,10 +189,10 @@ def rescale_pulses(
 
 
 def calculate_resets(
-    pulse_elapsed_cycles: List[int],
-    pulses_cycle_units: List[Pulse],
+    pulse_elapsed_cycles: list[int],
+    pulses_cycle_units: list[Pulse],
     instruction_cycle: int,
-) -> Tuple[Set[int], List[int]]:
+) -> tuple[set[int], list[int]]:
     """
     Calculate if a given signal has elapsed a full period and needs to be reset.
 
@@ -188,7 +207,7 @@ def calculate_resets(
                                         a list of elapsed time per signal
                                         [minimum instruction cycles]
     """
-    channels_active: Set[int] = set()
+    channels_active: set[int] = set()
     # cycle through the pulses
     for idx_pulse, pulse in enumerate(pulses_cycle_units):
         # check elapsed time is >= pulse offset
@@ -203,11 +222,11 @@ def calculate_resets(
 
 
 def calculate_resets_masking(
-    masking_pulse_elapsed_cycles: List[int],
-    base_channels: Union[Set[int], List[Pulse]],
-    masking_pulses_cycle_units: List[Pulse],
+    masking_pulse_elapsed_cycles: list[int],
+    base_channels: set[int] | list[Pulse],
+    masking_pulses_cycle_units: list[Pulse],
     instruction_cycle: int,
-) -> Tuple[Set[int], List[int]]:
+) -> tuple[set[int], list[int]]:
     """
     Calculate if a given masking signal has elapsed a full period and needs to be reset.
 
@@ -243,11 +262,9 @@ def calculate_resets_masking(
 
 
 def generate_repeating_pulses(
-    signals: List[Signal],
-    masking_signals: Optional[List[Signal]] = None,
-    min_instruction_len: int = 20,
-    nr_channels: int = 24,
-    reserved_channels: int = 3,
+    signals: list[Signal],
+    masking_signals: list[Signal] | None = None,
+    profile: BoardProfile = ESR_PRO_250,
     progress: bool = True,
 ) -> InstructionSequence:
     """
@@ -257,11 +274,8 @@ def generate_repeating_pulses(
         signals (List[Signal]): signals in the sequence
         masking_signals (Optional[List[Signal]], optional): masking signals. Defaults to
                                                             None.
-        min_instruction_len (int, optional): minimum instruction length [ns]. Defaults
-                                            to 20 ns.
-        nr_channels (int, optional): number of channels. Defaults to 24.
-        reserved_channels (int, optional): number of trailing channels that mirror
-                                            overall channel state. Defaults to 3.
+        profile (BoardProfile, optional): hardware profile used for timing, output
+                                          width, and control-bit validation.
         progress (bool, optional): show progress bar. Defaults to True.
 
     Returns:
@@ -274,26 +288,17 @@ def generate_repeating_pulses(
     # Input validation
     if not signals:
         raise ValueError("At least one signal must be provided")
-    if min_instruction_len <= 0:
-        raise ValueError(f"min_instruction_len must be positive, got {min_instruction_len}")
-    if nr_channels <= 0:
-        raise ValueError(f"nr_channels must be positive, got {nr_channels}")
-    if reserved_channels < 0:
-        raise ValueError(f"reserved_channels must be non-negative, got {reserved_channels}")
-    if reserved_channels >= nr_channels:
-        raise ValueError(
-            f"reserved_channels ({reserved_channels}) must be less than nr_channels ({nr_channels})"
-        )
+    min_instruction_len = profile.min_instruction_len_ns
 
-    c: List[List[int]] = []
-    t: List[int] = []
+    c: list[list[int]] = []
+    t: list[int] = []
 
     if masking_signals is None:
         masking_signals = []
 
     signal_channels = {ch for signal in signals for ch in signal.channels}
     masking_channels = {ch for signal in masking_signals for ch in signal.channels}
-    max_controllable_channel = nr_channels - reserved_channels - 1
+    max_controllable_channel = profile.output_bits - 1
     highest_requested_channel = max(signal_channels | masking_channels, default=-1)
     if highest_requested_channel > max_controllable_channel:
         raise ValueError(
@@ -317,12 +322,17 @@ def generate_repeating_pulses(
     masking_signals = deepcopy(masking_signals)
 
     # set the rescaled frequencies
-    for signal, freq_rescaled in zip(signals, frequencies_rescaled):
-        signal.frequency = freq_rescaled
-    for masking_signal, freq_rescaled in zip(
-        masking_signals, frequencies_rescaled[-len(masking_signals) :]
+    for signal, freq_rescaled in zip(
+        signals, frequencies_rescaled[: len(signals)], strict=True
     ):
-        masking_signal.frequency = freq_rescaled
+        signal.frequency = freq_rescaled
+    if masking_signals:
+        for masking_signal, freq_rescaled in zip(
+            masking_signals,
+            frequencies_rescaled[-len(masking_signals) :],
+            strict=True,
+        ):
+            masking_signal.frequency = freq_rescaled
 
     # calculating the offset, frequency and amount of time at high state
     # in units of minimum_instruction_len
@@ -389,7 +399,7 @@ def generate_repeating_pulses(
         )
 
         gated_channels = channels_active.intersection(channels_masking_active)
-        chs = [0] * nr_channels
+        chs = [0] * profile.flag_bits
         for channel in gated_channels:
             chs[channel] = 1
 
@@ -397,7 +407,7 @@ def generate_repeating_pulses(
         for channel in active_low_channels:
             chs[channel] = 0 if chs[channel] else 1
 
-        set_reserved_channels(chs, reserved_channels)
+        set_control_mode(chs, profile.generated_disable_mode, profile)
 
         if not c:
             t.append(min_instruction_len)
@@ -410,13 +420,16 @@ def generate_repeating_pulses(
 
     # set all channels low for the last instruction, which will branch back to the first
     # instruction so as to repeat the pulse sequence
-    channels_off = all_channels_off(
-        signals, nr_channels=nr_channels, reserved_channels=reserved_channels
-    )
+    channels_off = [0] * profile.flag_bits
+    for signal in signals:
+        if not signal.active_high:
+            for channel in signal.channels:
+                channels_off[channel] = 1
+    set_control_mode(channels_off, profile.generated_disable_mode, profile)
 
     # Convert the time and channel state lists into Instructions
-    pulse_sequence: List[Instruction] = []
-    for t_, c_ in zip(t, c):
+    pulse_sequence: list[Instruction] = []
+    for t_, c_ in zip(t, c, strict=True):
         pulse_sequence.append(
             Instruction(
                 label="", flags=c_, duration=t_, opcode=Opcode.CONTINUE, inst_data=0
@@ -431,5 +444,7 @@ def generate_repeating_pulses(
             inst_data=0,
         )
     )
+
+    validate_sequence(pulse_sequence, profile=profile)
 
     return InstructionSequence(pulse_sequence)

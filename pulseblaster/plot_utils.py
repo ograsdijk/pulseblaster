@@ -5,24 +5,25 @@ This module provides functions for plotting instruction sequences
 to visualize the timing and state of different channels.
 """
 
-from typing import Optional
-
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from .data_structures import InstructionSequence
+from .validation import ESR_PRO_250, BoardProfile
 
 
 def plot_sequence(
     sequence: InstructionSequence,
-    ax: Optional[Axes] = None,
+    ax: Axes | None = None,
     offset: float = 1.3,
     fontsize: int = 14,
-    div: Optional[float] = None,
-    exclude_channels: Optional[list[int]] = None,
-) -> tuple[Optional[Figure], Axes]:
+    div: float | None = None,
+    exclude_channels: list[int] | None = None,
+    profile: BoardProfile = ESR_PRO_250,
+    include_control_bits: bool = False,
+) -> tuple[Figure | None, Axes]:
     """
     Plot a PulseBlaster instruction sequence.
 
@@ -34,6 +35,8 @@ def plot_sequence(
         div (Optional[float]): time unit divisor (1e9 for s, 1e6 for ms, etc.).
                                If None, automatically selects appropriate unit
         exclude_channels (Optional[list[int]]): channels to hide from the plot
+        profile (BoardProfile): board profile used to identify output/control bits
+        include_control_bits (bool): include non-output control bits when True
 
     Returns:
         tuple[Optional[Figure], Axes]: matplotlib figure and axes objects
@@ -45,7 +48,11 @@ def plot_sequence(
 
     c = sequence.flags.copy()
 
-    select = np.where(np.sum(c, axis=0) != 0)[0]
+    max_channel = c.shape[1] if include_control_bits else profile.output_bits
+    select = np.asarray(
+        [ch for ch in np.where(np.sum(c, axis=0) != 0)[0] if ch < max_channel],
+        dtype=int,
+    )
     if exclude_channels:
         exclude_set = set(exclude_channels)
         nr_channels = c.shape[1]
@@ -60,7 +67,7 @@ def plot_sequence(
         select = np.asarray([ch for ch in select if ch not in exclude_set], dtype=int)
 
     c = c[:, select]
-    c = np.append(np.zeros((1, len(select))), c, axis=0)
+    c = np.vstack([np.zeros((1, len(select)), dtype=c.dtype), c])
 
     # convert to 64 bits because 32-bit signed integers overflow when the # ns exceeds
     # ~2.14 s, while 64-bit integers overflow for ~292 years worth of ns.
@@ -94,7 +101,7 @@ def plot_sequence(
 
     ax.tick_params(axis="both", which="major", labelsize=fontsize)
     ax.tick_params(axis="both", which="minor", labelsize=fontsize * 0.8)
-    ax.xaxis.get_offset_text().set_size(fontsize)
+    ax.xaxis.get_offset_text().set_fontsize(fontsize)
 
     if sequence.branch_index is not None:
         ax.legend(fontsize=fontsize)

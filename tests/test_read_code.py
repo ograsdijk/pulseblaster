@@ -3,7 +3,9 @@
 import pytest
 
 from pulseblaster.data_structures import InstructionSequence, Opcode
+from pulseblaster.device import PulseBlaster
 from pulseblaster.read_code import code_to_instructions
+from pulseblaster.validation import BoardProfile
 
 
 class TestCodeToInstructions:
@@ -75,8 +77,8 @@ class TestCodeToInstructions:
         code = """
         0x000001, 100ns, JSR, subroutine
         0x000000, 200ns, STOP
-        subroutine: 0x000001, 50ns, CONTINUE
-        0x000000, 50ns, RTS
+        subroutine: 0x000001, 52ns, CONTINUE
+        0x000000, 52ns, RTS
         """
         sequence = code_to_instructions(code)
         assert sequence.instructions[0].opcode == Opcode.JSR
@@ -170,9 +172,9 @@ start: 0xFFFFFF, 100ms, LOOP, 3
         """Test parsing nested loops."""
         code = """
         0x000001, 100ns, LOOP, 3
-        0x000002, 50ns, LOOP, 2
-        0x000003, 25ns, END_LOOP
-        0x000004, 50ns, END_LOOP
+        0x000002, 52ns, LOOP, 2
+        0x000003, 24ns, END_LOOP
+        0x000004, 52ns, END_LOOP
         0x000005, 100ns, STOP
         """
         sequence = code_to_instructions(code)
@@ -182,11 +184,11 @@ start: 0xFFFFFF, 100ms, LOOP, 3
         assert sequence.instructions[2].opcode == Opcode.END_LOOP
         assert sequence.instructions[3].opcode == Opcode.END_LOOP
 
-    def test_floating_point_duration(self):
-        """Test parsing floating point duration values."""
+    def test_non_aligned_duration_raises(self):
+        """Test that durations must align to the default 250 MHz clock cycles."""
         code = "0x000001, 123.5ns, CONTINUE"
-        sequence = code_to_instructions(code)
-        assert sequence.instructions[0].duration == 123  # Should be converted to int
+        with pytest.raises(ValueError, match="does not align to clock"):
+            code_to_instructions(code)
 
     def test_whitespace_handling(self):
         """Test that various whitespace formats are handled."""
@@ -220,14 +222,14 @@ start: 0xFFFFFF, 100ms, LOOP, 3
         assert sequence.instructions[1].opcode == Opcode.STOP
 
     def test_wait_opcode(self):
-        """Test WAIT opcode."""
+        """Test WAIT opcode cannot be first instruction on ESR-PRO."""
         code = "0x000000, 100ns, WAIT"
-        sequence = code_to_instructions(code)
-        assert sequence.instructions[0].opcode == Opcode.WAIT
+        with pytest.raises(ValueError, match="WAIT is not allowed as the first instruction"):
+            code_to_instructions(code)
 
     def test_long_delay_opcode(self):
         """Test LONG_DELAY opcode."""
-        code = "0x000000, 100ns, LONG_DELAY"
+        code = "0xE00000, 100ns, LONG_DELAY, 2"
         sequence = code_to_instructions(code)
         assert sequence.instructions[0].opcode == Opcode.LONG_DELAY
 
@@ -253,11 +255,28 @@ start: 0xFFFFFF, 100ms, LOOP, 3
             code_to_instructions(code)
 
     def test_custom_flag_width(self):
-        """Test parsing instructions with a custom number of flags."""
+        """Test parsing instructions with a custom profile flag width."""
         code = "0x001F, 100ns, STOP"
-        sequence = code_to_instructions(code, nr_flags=5)
-        assert len(sequence.instructions[0].flags) == 5
+        profile = BoardProfile(flag_bits=8, output_bits=5, control_bits=(5, 6, 7))
+        sequence = code_to_instructions(code, profile=profile)
+        assert len(sequence.instructions[0].flags) == 8
         assert sum(sequence.instructions[0].flags) == 5
+
+    def test_flags_exceeding_profile_width_raise(self):
+        """Test flags wider than the profile are rejected."""
+        code = "0x0100, 100ns, STOP"
+        profile = BoardProfile(flag_bits=8, output_bits=5, control_bits=(5, 6, 7))
+        with pytest.raises(ValueError, match="exceeds 8 bits"):
+            code_to_instructions(code, profile=profile)
+
+    def test_parser_and_program_validation_use_same_profile(self):
+        """Test parsed code accepted by parser is accepted by program validation."""
+        code = """
+        0xE00001, 100ns, CONTINUE
+        0xE00000, 200ns, BRANCH, 0
+        """
+        sequence = code_to_instructions(code)
+        PulseBlaster.validate_program(sequence.instructions)
 
     def test_label_resolution(self):
         """Test that labels are properly resolved to addresses."""

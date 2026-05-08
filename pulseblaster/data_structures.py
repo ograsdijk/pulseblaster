@@ -7,7 +7,6 @@ signals, instructions, and sequences for the PulseBlaster hardware.
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import List, Optional, Tuple
 
 import numpy as np
 import numpy.typing as npt
@@ -27,7 +26,7 @@ class Pulse:
     """
 
     period: int
-    channels: List[int]
+    channels: list[int]
     offset: int
     high: int
     active_high: bool
@@ -49,7 +48,7 @@ class Signal:
     """
 
     frequency: float
-    channels: List[int]
+    channels: list[int]
     offset: int = 0
     duty_cycle: float = 0.5
     high: int = 0
@@ -110,7 +109,7 @@ class Opcode(IntEnum):
 @dataclass
 class Instruction:
     label: str
-    flags: List[int]
+    flags: list[int]
     duration: int
     opcode: Opcode
     inst_data: int = 0
@@ -123,8 +122,9 @@ class Loop:
 
 
 def unroll_duration_flags(
-    instructions: List[Instruction],
-) -> Tuple[npt.NDArray[np.int_], npt.NDArray[np.int_], Optional[int]]:
+    instructions: list[Instruction],
+    max_unrolled_instructions: int = 1_000_000,
+) -> tuple[npt.NDArray[np.int_], npt.NDArray[np.int_], int | None]:
     """
     generate the unrolled durations and flags that compose the entire instruction set,
     useful for plotting or inspecting the total pulse sequence.
@@ -140,11 +140,15 @@ def unroll_duration_flags(
     """
     if not instructions:
         raise ValueError("Instruction list cannot be empty")
+    if max_unrolled_instructions <= 0:
+        raise ValueError(
+            f"max_unrolled_instructions must be positive, got {max_unrolled_instructions}"
+        )
 
     _duration: list[int] = []
     _flags: list[list[int]] = []
     _addresses: list[int] = []
-    branch_index: Optional[int] = None
+    branch_index: int | None = None
 
     idx = 0
     # subroutines contains the indices of the JSR opcodes
@@ -153,11 +157,21 @@ def unroll_duration_flags(
     # iterations_left of the loop
     loops: list[Loop] = []
     while 0 <= idx < len(instructions):
+        if len(_duration) >= max_unrolled_instructions:
+            raise ValueError(
+                "Instruction unrolling exceeded "
+                f"{max_unrolled_instructions} executed instructions"
+            )
         # load instruction
         instruction = instructions[idx]
 
         # append the duration and flag bytes
-        _duration.append(instruction.duration)
+        duration = (
+            instruction.duration * instruction.inst_data
+            if instruction.opcode == Opcode.LONG_DELAY
+            else instruction.duration
+        )
+        _duration.append(duration)
         _flags.append(instruction.flags)
         _addresses.append(idx)
 
@@ -219,10 +233,10 @@ def unroll_duration_flags(
 
 @dataclass(frozen=True)
 class InstructionSequence:
-    instructions: List[Instruction]
+    instructions: list[Instruction]
     duration: npt.NDArray[np.int_] = field(init=False)
     flags: npt.NDArray[np.int_] = field(init=False)
-    branch_index: Optional[int] = field(init=False)
+    branch_index: int | None = field(init=False)
 
     def __post_init__(self):
         duration, flags, branch_index = unroll_duration_flags(self.instructions)

@@ -1,14 +1,11 @@
 import logging
 
 import matplotlib.pyplot as plt
-from rich.logging import RichHandler
 
 from pulseblaster import Signal, generate_pulses, plot_sequence
 
 FORMAT = "%(message)s"
-logging.basicConfig(
-    level=logging.INFO, format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
-)
+logging.basicConfig(level=logging.INFO, format=FORMAT, datefmt="[%X]")
 
 # 11 Hz signal to be output on channels 1&3, which is high for 1 ms
 flashlamp = Signal(

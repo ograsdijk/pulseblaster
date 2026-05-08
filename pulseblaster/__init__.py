@@ -14,6 +14,7 @@ from .device import PulseBlaster
 from .plot_utils import plot_sequence
 from .read_code import code_to_instructions
 from .utils import number_of_boards_connected
+from .validation import ESR_PRO_250, BoardProfile, validate_sequence
 
 __all__ = [
     "generate_pulses",
@@ -24,4 +25,7 @@ __all__ = [
     "plot_sequence",
     "code_to_instructions",
     "number_of_boards_connected",
+    "BoardProfile",
+    "ESR_PRO_250",
+    "validate_sequence",
 ]

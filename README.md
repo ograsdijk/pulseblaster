@@ -11,9 +11,10 @@ Only tested with the PulseBlaster ESR-PRO USB 250 MHz.
 With `generate_repeating_pulses` a series of repeating pulses can be generated composed of `Signal`.
 Each `Signal` represents a pulse sequence with a frequency, offset and pulse high duration and channel(s). `generate_repeating_pulses` takes the frequency, offset and pulse high duration into account to find the minimum viable repeating sequence that corresponds to all the required signals.
 
-`generate_repeating_pulses` also accepts `nr_channels` and `reserved_channels`.
-Only channels in the range `0..(nr_channels - reserved_channels - 1)` are user-controllable.
-For hardware with fully controllable outputs, set `reserved_channels=0`.
+The default `ESR_PRO_250` profile models a 250 MHz PulseBlasterESR-PRO:
+24 flag bits, 21 user output bits (`0..20`), and short-pulse control bits `21..23`.
+Generated normal instructions set the control bits to `ON` (`111`) to disable
+short-pulse gating.
 
 `masking_signals` act as periodic gating signals: their channels must be a subset of the
 base `signals` channels, and they enable the associated base channels only during the
@@ -58,6 +59,26 @@ plt.show()
 ```
 ![](images/sequence.png)
 
+### Sequence validation
+Generated and parsed sequences are validated before use.
+Validation checks include:
+- instruction structure (duration, opcode, inst_data, flag width)
+- loop/branch target consistency
+- mandatory clock-cycle alignment and short-pulse control-bit rules
+
+Unlike raw SpinAPI, which rounds instruction durations to the nearest clock cycle, this
+package validates durations strictly. Custom or parsed instructions must already be
+aligned to the selected `BoardProfile` clock. For `ESR_PRO_250`, durations must be
+multiples of 4 ns and at least 24 ns.
+
+You can also validate custom instruction lists directly:
+
+```python
+from pulseblaster import ESR_PRO_250, validate_sequence
+
+validate_sequence(sequence.instructions, profile=ESR_PRO_250)
+```
+
 ### Programming
 The code below shows how to program the PulseBlaster with a sequence and starts the sequence.
 
@@ -85,26 +106,23 @@ code = """// Sample program for SpinCore PulseBlaster Interpreter.
 // SOS using loops.
 
 // 3 Short
-       0x000000, 500ms, CONTINUE
+       0xE00000, 500ms, CONTINUE
 start: 0xFFFFFF, 100ms, LOOP, 3
-       0x000000, 100ms, END_LOOP
+       0xE00000, 100ms, END_LOOP
 
 // 3 Long
        0xFFFFFF, 300ms, LOOP, 3
-       0x000000, 100ms, END_LOOP
+       0xE00000, 100ms, END_LOOP
 
 // 3 Short
        0xFFFFFF, 100ms, LOOP, 3
-       0x000000, 100ms, END_LOOP
+       0xE00000, 100ms, END_LOOP
 
 // A pause
-       0x000000, 500ms, branch, start // branch to start
+       0xE00000, 500ms, branch, start // branch to start
 """
 
 sequence = code_to_instructions(code)
-
-# If your board uses a different instruction flag width:
-# sequence = code_to_instructions(code, nr_flags=32)
 
 plot_sequence(sequence)
 

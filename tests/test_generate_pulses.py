@@ -11,6 +11,7 @@ from pulseblaster.generate_pulses import (
     pulses_convert_to_instruction_length,
     rescale_pulses,
 )
+from pulseblaster.validation import ESR_PRO_250, BoardProfile, decode_control_mode
 
 
 class TestMinimumDurationAndNumCycles:
@@ -267,37 +268,16 @@ class TestGenerateRepeatingPulses:
         with pytest.raises(ValueError, match="At least one signal must be provided"):
             generate_repeating_pulses([], progress=False)
 
-    def test_validation_negative_min_instruction_len(self):
-        """Test that negative min_instruction_len raises ValueError."""
-        signals = [Signal(frequency=10, channels=[0])]
-        with pytest.raises(ValueError, match="min_instruction_len must be positive"):
-            generate_repeating_pulses(signals, min_instruction_len=-10, progress=False)
-
-    def test_validation_zero_min_instruction_len(self):
-        """Test that zero min_instruction_len raises ValueError."""
-        signals = [Signal(frequency=10, channels=[0])]
-        with pytest.raises(ValueError, match="min_instruction_len must be positive"):
-            generate_repeating_pulses(signals, min_instruction_len=0, progress=False)
-
-    def test_validation_negative_nr_channels(self):
-        """Test that negative nr_channels raises ValueError."""
-        signals = [Signal(frequency=10, channels=[0])]
-        with pytest.raises(ValueError, match="nr_channels must be positive"):
-            generate_repeating_pulses(signals, nr_channels=-1, progress=False)
-
-    def test_validation_reserved_channels_too_large(self):
-        """Test that reserved channels must be smaller than total channel count."""
-        signals = [Signal(frequency=10, channels=[0])]
-        with pytest.raises(ValueError, match="reserved_channels"):
-            generate_repeating_pulses(
-                signals, nr_channels=4, reserved_channels=4, progress=False
-            )
+    def test_validation_invalid_profile_clock(self):
+        """Test that invalid profile clock raises ValueError."""
+        with pytest.raises(ValueError, match="clock_mhz must be positive"):
+            BoardProfile(clock_mhz=0)
 
     def test_validation_signal_channel_exceeds_controllable_range(self):
         """Test that requested channels fit in configured controllable channel range."""
         signals = [Signal(frequency=10, channels=[21])]
         with pytest.raises(ValueError, match="controllable range"):
-            generate_repeating_pulses(signals, nr_channels=24, reserved_channels=3, progress=False)
+            generate_repeating_pulses(signals, progress=False)
 
     def test_validation_masking_channels_must_exist_in_signals(self):
         """Test that masking channels must target channels present in signals."""
@@ -308,11 +288,12 @@ class TestGenerateRepeatingPulses:
                 signals, masking_signals=masking_signals, progress=False
             )
 
-    def test_custom_min_instruction_len(self):
-        """Test with custom minimum instruction length."""
+    def test_custom_profile_min_instruction_len(self):
+        """Test with custom profile minimum instruction length."""
         signals = [Signal(frequency=10, channels=[0])]
+        profile = BoardProfile(min_instruction_cycles=25)
         sequence = generate_repeating_pulses(
-            signals, min_instruction_len=50, progress=False
+            signals, profile=profile, progress=False
         )
         assert isinstance(sequence, InstructionSequence)
 
@@ -329,6 +310,28 @@ class TestGenerateRepeatingPulses:
         sequence = generate_repeating_pulses(signals, progress=False)
         for instruction in sequence.instructions:
             assert len(instruction.flags) == 24
+
+    def test_generated_normal_instructions_use_on_disable_mode(self):
+        """Test generated normal instructions set ESR-PRO control bits to ON/111."""
+        signals = [Signal(frequency=10, channels=[0])]
+        sequence = generate_repeating_pulses(signals, progress=False)
+        for instruction in sequence.instructions:
+            assert decode_control_mode(instruction.flags, ESR_PRO_250) == 7
+
+    def test_channel_20_is_valid(self):
+        """Test that the last ESR-PRO user output channel is accepted."""
+        signals = [Signal(frequency=10, channels=[20])]
+        sequence = generate_repeating_pulses(signals, progress=False)
+        assert isinstance(sequence, InstructionSequence)
+
+    def test_generated_durations_are_profile_quantum_multiples(self):
+        """Test generated durations align to the ESR_PRO_250 24 ns quantum."""
+        signals = [Signal(frequency=10, channels=[0])]
+        sequence = generate_repeating_pulses(signals, progress=False)
+        assert all(
+            instruction.duration % ESR_PRO_250.min_instruction_len_ns == 0
+            for instruction in sequence.instructions
+        )
 
     def test_progress_bar_disabled(self):
         """Test that progress=False works without errors."""

@@ -7,9 +7,8 @@ import pytest
 
 from pulseblaster import (
     Signal,
-    generate_pulses,
-    plot_sequence,
     code_to_instructions,
+    generate_pulses,
 )
 from pulseblaster.data_structures import InstructionSequence, Opcode
 
@@ -21,12 +20,12 @@ class TestEndToEndWorkflow:
         """Test creating a signal and generating pulse sequence."""
         # Create signal
         signal = Signal(frequency=10, channels=[0], duty_cycle=0.5)
-        
+
         # Generate sequence
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         # Verify sequence
         assert isinstance(sequence, InstructionSequence)
         assert len(sequence.instructions) > 0
@@ -41,12 +40,12 @@ class TestEndToEndWorkflow:
         qswitch = Signal(
             frequency=20, offset=int(90 * 1e3), high=int(1e6), channels=[2, 4]
         )
-        
+
         # Generate sequence
         sequence = generate_pulses.generate_repeating_pulses(
             [flashlamp, qswitch], progress=False
         )
-        
+
         # Verify
         assert isinstance(sequence, InstructionSequence)
         assert len(sequence.instructions) > 0
@@ -55,11 +54,11 @@ class TestEndToEndWorkflow:
         """Test workflow with masking signals."""
         signal = Signal(frequency=10, channels=[0])
         masking = Signal(frequency=5, channels=[0])
-        
+
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], masking_signals=[masking], progress=False
         )
-        
+
         assert isinstance(sequence, InstructionSequence)
         assert len(sequence.instructions) > 0
 
@@ -69,9 +68,9 @@ class TestEndToEndWorkflow:
         start: 0x000001, 100ns, CONTINUE
                0x000000, 200ns, BRANCH, start
         """
-        
+
         sequence = code_to_instructions(code)
-        
+
         assert isinstance(sequence, InstructionSequence)
         assert len(sequence.instructions) == 2
         assert sequence.branch_index is not None
@@ -79,11 +78,11 @@ class TestEndToEndWorkflow:
     def test_active_low_signal_workflow(self):
         """Test workflow with active low signals."""
         signal = Signal(frequency=15, channels=[5], active_high=False)
-        
+
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         assert isinstance(sequence, InstructionSequence)
         # Check that flags are properly inverted for active low
 
@@ -91,11 +90,11 @@ class TestEndToEndWorkflow:
         """Test workflow with time-offset signals."""
         signal1 = Signal(frequency=10, channels=[0], offset=0)
         signal2 = Signal(frequency=10, channels=[1], offset=int(50e6))
-        
+
         sequence = generate_pulses.generate_repeating_pulses(
             [signal1, signal2], progress=False
         )
-        
+
         assert isinstance(sequence, InstructionSequence)
         assert len(sequence.instructions) > 0
 
@@ -109,7 +108,7 @@ class TestSequenceProperties:
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         for instruction in sequence.instructions:
             assert instruction.duration > 0
 
@@ -119,7 +118,7 @@ class TestSequenceProperties:
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         for instruction in sequence.instructions:
             assert len(instruction.flags) == 24
             assert all(f in [0, 1] for f in instruction.flags)
@@ -130,7 +129,7 @@ class TestSequenceProperties:
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         assert sequence.instructions[-1].opcode == Opcode.BRANCH
         assert sequence.instructions[-1].inst_data == 0
 
@@ -140,7 +139,7 @@ class TestSequenceProperties:
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         # Check unrolled properties
         assert len(sequence.duration) > 0
         assert len(sequence.flags) > 0
@@ -161,9 +160,7 @@ class TestEdgeCases:
     def test_very_low_frequency(self):
         """Test with very low frequency signal."""
         signal = Signal(frequency=1, channels=[0], duty_cycle=0.5)
-        sequence = generate_pulses.generate_repeating_pulses(
-            [signal], min_instruction_len=100, progress=False
-        )
+        sequence = generate_pulses.generate_repeating_pulses([signal], progress=False)
         assert isinstance(sequence, InstructionSequence)
 
     def test_many_channels(self):
@@ -241,15 +238,15 @@ class TestCompatibility:
         generated_seq = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         # Parse from code
         code = "0x000001, 100ns, BRANCH, 0"
         parsed_seq = code_to_instructions(code)
-        
+
         # Both should be InstructionSequence
         assert isinstance(generated_seq, InstructionSequence)
         assert isinstance(parsed_seq, InstructionSequence)
-        
+
         # Both should have valid properties
         assert len(generated_seq.instructions) > 0
         assert len(parsed_seq.instructions) > 0
@@ -260,6 +257,6 @@ class TestCompatibility:
         sequence = generate_pulses.generate_repeating_pulses(
             [signal], progress=False
         )
-        
+
         # Unrolled length should match or exceed instruction count
         assert len(sequence.duration) >= len(sequence.instructions)

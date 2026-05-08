@@ -46,7 +46,7 @@ def sample_pulseblaster_code():
     // Simple test program
     start: 0x000001, 100ns, CONTINUE
            0x000000, 200ns, CONTINUE
-           0x000001, 150ns, BRANCH, start
+           0x000001, 152ns, BRANCH, start
     """
 
 
@@ -66,6 +66,6 @@ def jsr_code():
     return """
     0x000001, 100ns, JSR, sub
     0x000000, 200ns, STOP
-    sub: 0x000001, 50ns, CONTINUE
-    0x000000, 50ns, RTS
+    sub: 0x000001, 52ns, CONTINUE
+    0x000000, 52ns, RTS
     """
