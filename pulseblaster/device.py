@@ -115,7 +115,9 @@ class PulseBlaster:
         self.validate_program(sequence, profile=self.profile)
 
         self._check_return_code(pb_reset(), "reset PulseBlaster board")
-        self._check_return_code(pb_core_clock(self.clock), f"set core clock to {self.clock} MHz")
+        clock_ret = pb_core_clock(self.clock)
+        if clock_ret is not None:
+            self._check_return_code(clock_ret, f"set core clock to {self.clock} MHz")
         self._check_return_code(pb_start_programming(PULSE_PROGRAM), "start pulse programming")
 
         try:
