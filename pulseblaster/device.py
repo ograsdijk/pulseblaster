@@ -51,6 +51,8 @@ class PulseBlaster:
         allow_non_negative: bool = False,
         error_cls: type[Exception] = RuntimeError,
     ) -> None:
+        # spinapi wrappers already raise RuntimeError on failure, so this is a
+        # defensive backstop for builds whose contract returns a code instead.
         failed = return_code < 0 if allow_non_negative else return_code != 0
         if failed:
             raise error_cls(f"Failed to {action}: {pb_get_error()}")
@@ -115,6 +117,8 @@ class PulseBlaster:
         self.validate_program(sequence, profile=self.profile)
 
         self._check_return_code(pb_reset(), "reset PulseBlaster board")
+        # spinapi's pb_core_clock wraps a void C call and returns None; only validate
+        # when a build actually hands back a return code.
         clock_ret = pb_core_clock(self.clock)
         if clock_ret is not None:
             self._check_return_code(clock_ret, f"set core clock to {self.clock} MHz")
