@@ -154,6 +154,30 @@ class TestValidateSequence:
         with pytest.raises(ValueError, match="maximum loop depth"):
             validate_sequence(instructions, profile=profile)
 
+    def test_subroutine_depth_limit_is_enforced(self):
+        profile = BoardProfile(max_subroutine_depth=1)
+        instructions = [
+            Instruction("", _flags(profile=profile), 28, Opcode.JSR, 2),
+            Instruction("", _flags(profile=profile), 20, Opcode.BRANCH, 0),
+            Instruction("", _flags(profile=profile), 28, Opcode.JSR, 4),
+            Instruction("", _flags(profile=profile), 28, Opcode.RTS, 0),
+            Instruction("", _flags(profile=profile), 28, Opcode.RTS, 0),
+        ]
+
+        with pytest.raises(ValueError, match="Subroutine call depth 2"):
+            validate_sequence(instructions, profile=profile)
+
+    def test_recursive_subroutine_is_rejected(self):
+        instructions = [
+            Instruction("", _flags(), 28, Opcode.JSR, 2),
+            Instruction("", _flags(), 20, Opcode.BRANCH, 0),
+            Instruction("", _flags(), 28, Opcode.JSR, 2),
+            Instruction("", _flags(), 28, Opcode.RTS, 0),
+        ]
+
+        with pytest.raises(ValueError, match="Recursive subroutine"):
+            validate_sequence(instructions)
+
     def test_wait_not_first(self):
         instructions = [Instruction("", _flags(control_mode=7), 24, Opcode.WAIT, 0)]
         with pytest.raises(ValueError, match="WAIT is not allowed as the first instruction"):

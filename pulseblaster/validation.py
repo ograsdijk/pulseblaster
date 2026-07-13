@@ -174,6 +174,41 @@ def set_control_mode(flags: list[int], mode: int, profile: BoardProfile = ESR_PR
     flags[b2] = (mode >> 2) & 1
 
 
+def _subroutine_depth(
+    instructions: Sequence[Instruction],
+    target: int,
+    visiting: frozenset[int] = frozenset(),
+) -> int:
+    if target in visiting:
+        raise ValueError(f"Recursive subroutine call targeting instruction {target}")
+    visiting = visiting | {target}
+    maximum_child_depth = 0
+    idx = target
+    while idx < len(instructions):
+        instruction = instructions[idx]
+        if instruction.opcode == Opcode.JSR:
+            maximum_child_depth = max(
+                maximum_child_depth,
+                _subroutine_depth(instructions, instruction.inst_data, visiting),
+            )
+        if instruction.opcode == Opcode.RTS:
+            return 1 + maximum_child_depth
+        idx += 1
+    raise ValueError(f"Subroutine at instruction {target} has no RTS")
+
+
+def _maximum_subroutine_depth(instructions: Sequence[Instruction]) -> int:
+    """Return the deepest reachable JSR/RTS call chain."""
+    return max(
+        (
+            _subroutine_depth(instructions, instruction.inst_data)
+            for instruction in instructions
+            if instruction.opcode == Opcode.JSR
+        ),
+        default=0,
+    )
+
+
 def validate_sequence(
     instructions: Sequence[Instruction],
     profile: BoardProfile = ESR_PRO_250,
@@ -335,4 +370,11 @@ def validate_sequence(
     if loop_stack:
         raise ValueError(
             f"Missing END_LOOP for LOOP at instruction index {loop_stack[-1]}"
+        )
+
+    subroutine_depth = _maximum_subroutine_depth(instructions)
+    if subroutine_depth > profile.max_subroutine_depth:
+        raise ValueError(
+            f"Subroutine call depth {subroutine_depth} exceeds maximum "
+            f"{profile.max_subroutine_depth}"
         )

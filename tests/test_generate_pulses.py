@@ -1,15 +1,28 @@
 """Tests for generate_pulses module."""
 
 import random
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
-from pulseblaster.data_structures import InstructionSequence, Opcode, Pulse, Signal
+from pulseblaster import OptimizationLevel
+from pulseblaster.data_structures import (
+    Instruction,
+    InstructionSequence,
+    Opcode,
+    Pulse,
+    Signal,
+)
 from pulseblaster.generate_pulses import (
     WaveformInterval,
+    _compile_with_loops,
+    _compile_without_loops,
     _compress_intervals,
+    _deduplicate_one_subroutine,
+    _maximum_loop_depth,
     _reference_intervals,
+    _timeline_from_instructions,
     calculate_resets,
     calculate_resets_masking,
     generate_repeating_pulses,
@@ -492,6 +505,144 @@ class TestGenerateRepeatingPulses:
         assert sequence.flags[-1, 0] == 1
         high_duration = int(sequence.duration[sequence.flags[:, 0] == 1].sum())
         assert high_duration == 50_000_000
+
+    @pytest.mark.parametrize("long_duration", [101, 106, 201, 1_009, 9_411])
+    def test_long_delay_is_emitted_with_exact_duration(self, long_duration):
+        profile = BoardProfile(max_delay_cycles=100)
+        flags = tuple([0] * profile.flag_bits)
+        intervals = [
+            WaveformInterval(flags, long_duration),
+            WaveformInterval(flags, 20),
+        ]
+
+        instructions = _compile_without_loops(intervals, profile)
+        timeline = _timeline_from_instructions(instructions, profile)
+
+        assert any(item.opcode == Opcode.LONG_DELAY for item in instructions)
+        assert sum(item.duration_ticks for item in timeline) == long_duration + 20
+
+    def test_generator_uses_long_delay_for_small_delay_field(self):
+        profile = BoardProfile(max_delay_cycles=100)
+
+        sequence = generate_repeating_pulses(
+            [Signal(frequency=1_000_000, duty_cycle=0.5, channels=[0])],
+            profile=profile,
+            progress=False,
+        )
+
+        assert sequence.compilation_report is not None
+        assert sequence.compilation_report.long_delay_count == 2
+        assert sequence.total_duration_ns == 1_000
+
+    def test_advanced_mode_factors_nested_repeats(self):
+        def interval(channel: int) -> WaveformInterval:
+            flags = [0] * ESR_PRO_250.flag_bits
+            flags[channel] = 1
+            flags[21:] = [1, 1, 1]
+            return WaveformInterval(tuple(flags), 100)
+
+        outer_pattern = [
+            interval(0),
+            interval(1),
+            interval(2),
+            interval(1),
+            interval(2),
+            interval(3),
+        ]
+        intervals = outer_pattern * 10 + [interval(4)]
+
+        basic = _compile_with_loops(intervals, ESR_PRO_250, advanced=False)
+        advanced = _compile_with_loops(intervals, ESR_PRO_250, advanced=True)
+
+        assert len(advanced) < len(basic)
+        assert _maximum_loop_depth(advanced) >= 2
+        assert _timeline_from_instructions(advanced, ESR_PRO_250) == intervals
+
+    def test_non_adjacent_continue_blocks_use_subroutine(self):
+        def instruction(channel: int, duration: int):
+            flags = [0] * ESR_PRO_250.flag_bits
+            flags[channel] = 1
+            flags[21:] = [1, 1, 1]
+            return Instruction("", flags, duration, Opcode.CONTINUE, 0)
+
+        block = [
+            instruction(0, 28),
+            instruction(1, 32),
+            instruction(2, 36),
+            instruction(3, 40),
+        ]
+        separator = instruction(4, 44)
+        branch = replace(instruction(5, 48), opcode=Opcode.BRANCH)
+        original = [*block, separator, *block, branch]
+
+        optimized = _deduplicate_one_subroutine(original, ESR_PRO_250)
+
+        assert len(optimized) < len(original)
+        assert sum(item.opcode == Opcode.JSR for item in optimized) == 2
+        assert sum(item.opcode == Opcode.RTS for item in optimized) == 1
+        assert _timeline_from_instructions(optimized, ESR_PRO_250) == _timeline_from_instructions(
+            original, ESR_PRO_250
+        )
+
+    def test_compilation_report_records_advanced_policy(self):
+        sequence = generate_repeating_pulses(
+            [Signal(frequency=100, channels=[0])],
+            progress=False,
+            optimization=OptimizationLevel.ADVANCED,
+        )
+
+        report = sequence.compilation_report
+        assert report is not None
+        assert report.optimization_level == OptimizationLevel.ADVANCED
+        assert report.stored_instructions == len(sequence.instructions)
+        assert report.superperiod_ns == 10_000_000
+
+    def test_unknown_optimization_policy_is_rejected(self):
+        with pytest.raises(ValueError, match="Unknown optimization level"):
+            generate_repeating_pulses(
+                [Signal(frequency=100, channels=[0])],
+                progress=False,
+                optimization="maximum",
+            )
+
+    def test_23_hz_sequence_with_100_khz_carrier_fits_program_memory(self):
+        frequency = 23
+        signals = [
+            Signal(frequency=frequency, high=100_000, channels=[0, 7]),
+            Signal(
+                frequency=frequency,
+                offset=1_000_000,
+                high=100_000,
+                channels=[1, 4],
+            ),
+            Signal(
+                frequency=frequency,
+                offset=1_080_000,
+                high=100_000,
+                channels=[2, 5],
+            ),
+            Signal(
+                frequency=frequency / 2,
+                offset=int(1 / frequency * 1e9) - int(3e6),
+                high=int(1 / frequency * 1e9),
+                channels=[3, 6],
+            ),
+            Signal(frequency=100_000, duty_cycle=0.5, channels=[8]),
+        ]
+
+        sequence = generate_repeating_pulses(
+            signals,
+            progress=False,
+            optimization=OptimizationLevel.ADVANCED,
+        )
+
+        report = sequence.compilation_report
+        assert report is not None
+        assert report.superperiod_ns == 2_000_000_000
+        assert report.reference_intervals == 400_308
+        assert report.executed_instructions == 400_308
+        assert report.stored_instructions <= 1_558
+        assert report.stored_instructions <= ESR_PRO_250.max_program_instructions
 
     @pytest.mark.parametrize("seed", range(5))
     def test_loop_compression_matches_reference_for_generated_cases(self, seed):

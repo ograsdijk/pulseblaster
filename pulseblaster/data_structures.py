@@ -6,7 +6,7 @@ signals, instructions, and sequences for the PulseBlaster hardware.
 """
 
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 
 import numpy as np
 import numpy.typing as npt
@@ -104,6 +104,32 @@ class Opcode(IntEnum):
     BRANCH = BRANCH
     LONG_DELAY = LONG_DELAY
     WAIT = WAIT
+
+
+class OptimizationLevel(StrEnum):
+    """Sequence compiler optimization policy."""
+
+    NONE = "none"
+    BASIC = "basic"
+    ADVANCED = "advanced"
+
+
+@dataclass(frozen=True)
+class CompilationReport:
+    """Summary of sequence planning and selected hardware encoding."""
+
+    optimization_level: OptimizationLevel
+    superperiod_ns: int
+    reference_intervals: int
+    stored_instructions: int
+    executed_instructions: int
+    loop_count: int
+    maximum_loop_depth: int
+    long_delay_count: int
+    subroutine_count: int
+    maximum_subroutine_depth: int
+    compression_ratio: float
+    compile_seconds: float
 
 
 @dataclass
@@ -234,6 +260,7 @@ def unroll_duration_flags(
 @dataclass(frozen=True)
 class InstructionSequence:
     instructions: list[Instruction]
+    compilation_report: CompilationReport | None = None
     _duration: npt.NDArray[np.int_] | None = field(
         init=False, default=None, repr=False, compare=False
     )

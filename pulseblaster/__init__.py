@@ -9,7 +9,13 @@ This package provides tools for:
 """
 
 from . import generate_pulses
-from .data_structures import Instruction, InstructionSequence, Signal
+from .data_structures import (
+    CompilationReport,
+    Instruction,
+    InstructionSequence,
+    OptimizationLevel,
+    Signal,
+)
 from .device import PulseBlaster
 from .plot_utils import plot_sequence
 from .read_code import code_to_instructions
@@ -21,6 +27,8 @@ __all__ = [
     "Signal",
     "Instruction",
     "InstructionSequence",
+    "OptimizationLevel",
+    "CompilationReport",
     "PulseBlaster",
     "plot_sequence",
     "code_to_instructions",

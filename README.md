@@ -27,9 +27,62 @@ stationary: the carrier pattern is stored once for each slow-channel state inste
 being expanded into every edge. The default profile enforces the 4096-word program
 memory and eight-level loop limit.
 
-The current optimizer targets consecutive repeated blocks. `LONG_DELAY`, nested-loop
-factoring, and `JSR`/`RTS` deduplication are represented and validated by the package
-but are not yet emitted automatically by `generate_repeating_pulses`.
+The compiler can target consecutive repeated blocks, `LONG_DELAY`, nested-loop
+factoring, and `JSR`/`RTS` deduplication through the advanced policy.
+Basic optimization remains the default until advanced programs have broader physical
+hardware coverage.
+
+```python
+from pulseblaster import OptimizationLevel
+
+sequence = generate_pulses.generate_repeating_pulses(
+    signals,
+    optimization=OptimizationLevel.ADVANCED,
+    progress=False,
+)
+
+print(sequence.compilation_report)
+```
+
+The policies are:
+
+- `NONE`: emit event intervals directly, using `LONG_DELAY` only when required for
+  hardware legality.
+- `BASIC`: compress adjacent repeated blocks with one-level hardware loops.
+- `ADVANCED`: add bounded dynamic-programming windows, nested-loop factoring,
+  non-adjacent subroutine reuse, and choose the lowest-cost legal candidate.
+
+`CompilationReport` records the superperiod, reference and stored instruction counts,
+compression ratio, compile time, loop depth, long-delay use, and subroutine use.
+
+Transition streams are merged lazily, keeping event scheduling memory proportional to
+the number of input signals rather than the number of raw clock edges. The normalized
+reference intervals are retained while the global optimizer compares candidates and
+their waveforms are verified against the selected instruction program as a stream.
+
+The complete 23 Hz laser sequence with a continuous 100 kHz output is in
+`examples/generate_repeating_pulses_100khz.py`. On the default 250 MHz profile it
+currently compiles a 2 s superperiod with 400,308 executed intervals into 1,558 stored
+instructions, below the 4,096-instruction limit.
+
+### Physical-board validation
+
+Compilation and simulator tests do not establish firmware-specific electrical timing.
+Before connecting the laser, validate the generated program with a scope or logic
+analyzer and a disconnected or otherwise safe load:
+
+1. Confirm the installed board is the 250 MHz, 24-8 design represented by
+   `ESR_PRO_250`, including its 4,096-word memory and instruction timing minima.
+2. Run `python examples/generate_repeating_pulses_100khz.py` and confirm the report
+   stays at or below 4,096 stored instructions and has a 2,000,000,000 ns superperiod.
+3. Program the board without enabling the laser. Check channel 8 first: 5 us high,
+   5 us low, continuously, including across every slow-channel transition.
+4. Check the paired 23 Hz trigger, flashlamp, and Q-switch channels. Confirm the
+   flashlamp begins at 1 ms and the Q-switch at 1.080 ms relative to the trigger.
+5. Check the 11.5 Hz shutter waveform and the transition at the 2 s branch boundary.
+   There must be no extra or missing 100 kHz edge at the branch.
+6. Only after those checks pass, reconnect the controlled equipment and repeat at a
+   safe operating level before normal use.
 
 `masking_signals` act as periodic gating signals: their channels must be a subset of the
 base `signals` channels, and they enable the associated base channels only during the
