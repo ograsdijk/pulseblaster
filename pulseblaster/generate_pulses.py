@@ -6,14 +6,296 @@ with multiple frequencies and converting them to PulseBlaster instructions.
 """
 
 import logging
-from copy import deepcopy
+from collections import defaultdict
+from dataclasses import dataclass
+from fractions import Fraction
 from math import gcd, lcm
-
-import tqdm
 
 from .data_structures import Instruction, InstructionSequence, Opcode, Pulse, Signal
 from .utils import round_to_nearest_n_ns
 from .validation import ESR_PRO_250, BoardProfile, set_control_mode, validate_sequence
+
+
+@dataclass(frozen=True)
+class WaveformInterval:
+    """One constant-output interval expressed in hardware clock ticks."""
+
+    flags: tuple[int, ...]
+    duration_ticks: int
+
+
+def _round_fraction(value: Fraction) -> int:
+    """Round a non-negative fraction to the nearest integer, halves upward."""
+    if value < 0:
+        raise ValueError(f"Cannot round negative timing value {value}")
+    return (2 * value.numerator + value.denominator) // (2 * value.denominator)
+
+
+def _as_frequency_fraction(frequency: float) -> Fraction:
+    """Preserve the decimal frequency supplied by the user as a rational value."""
+    return Fraction(str(frequency))
+
+
+def _frequency_gcd(frequencies: list[Fraction]) -> Fraction:
+    """Greatest common divisor for positive rational frequencies."""
+    common_denominator = lcm(*(frequency.denominator for frequency in frequencies))
+    scaled = [
+        frequency.numerator * (common_denominator // frequency.denominator)
+        for frequency in frequencies
+    ]
+    return Fraction(gcd(*scaled), common_denominator)
+
+
+def _superperiod_ticks(
+    signals: list[Signal],
+    masking_signals: list[Signal],
+    profile: BoardProfile,
+    max_superperiod_ns: int = int(10e9),
+) -> int:
+    frequencies = [
+        _as_frequency_fraction(signal.frequency)
+        for signal in [*signals, *masking_signals]
+    ]
+    fundamental_frequency = _frequency_gcd(frequencies)
+    duration_ns = Fraction(1_000_000_000, 1) / fundamental_frequency
+    if duration_ns > max_superperiod_ns:
+        raise ValueError(
+            "Common timespan of input frequencies is too large, "
+            f"{float(duration_ns) * 1e-9:.1e} s"
+        )
+    return _round_fraction(duration_ns / profile.clock_period_ns)
+
+
+def _signal_event_times(
+    signal: Signal,
+    duration_ticks: int,
+    tick_ns: int,
+) -> list[tuple[int, bool]]:
+    """Return quantized rise/fall events for one signal over a superperiod."""
+    frequency = _as_frequency_fraction(signal.frequency)
+    period_ticks = Fraction(1_000_000_000, tick_ns) / frequency
+    offset_ticks = Fraction(signal.offset, tick_ns)
+    high_ticks = (
+        period_ticks * Fraction(str(signal.duty_cycle))
+        if signal._duty_cycle_set
+        else Fraction(signal.high, tick_ns)
+    )
+    if high_ticks <= 0 or high_ticks >= period_ticks:
+        raise ValueError(
+            f"Signal on channels {signal.channels} has invalid quantized high time"
+        )
+
+    events: list[tuple[int, bool]] = []
+    occurrence = 0
+    while True:
+        rise_exact = offset_ticks + occurrence * period_ticks
+        if rise_exact >= duration_ticks:
+            break
+        rise = _round_fraction(rise_exact)
+        fall = _round_fraction(rise_exact + high_ticks)
+        if fall <= rise:
+            raise ValueError(
+                f"Signal on channels {signal.channels} has a pulse shorter than one "
+                f"{tick_ns} ns clock tick"
+            )
+        if rise < duration_ticks:
+            events.append((rise, True))
+        if fall < duration_ticks:
+            events.append((fall, False))
+        occurrence += 1
+    return events
+
+
+def _reference_intervals(
+    signals: list[Signal],
+    masking_signals: list[Signal],
+    profile: BoardProfile,
+    max_superperiod_ns: int = int(10e9),
+) -> tuple[list[WaveformInterval], int]:
+    """Build a clock-quantized waveform by visiting output transitions only."""
+    duration_ticks = _superperiod_ticks(
+        signals, masking_signals, profile, max_superperiod_ns
+    )
+    tick_ns = profile.clock_period_ns
+    events: dict[int, list[tuple[bool, int, bool]]] = defaultdict(list)
+
+    for idx, signal in enumerate(signals):
+        for event_tick, active in _signal_event_times(
+            signal, duration_ticks, tick_ns
+        ):
+            events[event_tick].append((False, idx, active))
+    for idx, signal in enumerate(masking_signals):
+        for event_tick, active in _signal_event_times(
+            signal, duration_ticks, tick_ns
+        ):
+            events[event_tick].append((True, idx, active))
+
+    active_signals = [False] * len(signals)
+    active_masks = [False] * len(masking_signals)
+    channel_polarities: dict[int, bool] = {}
+    for signal in signals:
+        for channel in signal.channels:
+            existing_polarity = channel_polarities.setdefault(
+                channel, signal.active_high
+            )
+            if existing_polarity != signal.active_high:
+                raise ValueError(
+                    f"Channel {channel} is used with conflicting active_high values"
+                )
+
+    mask_indices_by_channel: dict[int, list[int]] = defaultdict(list)
+    for idx, signal in enumerate(masking_signals):
+        for channel in signal.channels:
+            mask_indices_by_channel[channel].append(idx)
+
+    boundaries = sorted({0, duration_ticks, *events})
+    intervals: list[WaveformInterval] = []
+    for boundary_idx, tick in enumerate(boundaries[:-1]):
+        for is_mask, signal_idx, active in events.get(tick, []):
+            if is_mask:
+                active_masks[signal_idx] = active
+            else:
+                active_signals[signal_idx] = active
+
+        logical_channels = {
+            channel
+            for signal_idx, signal in enumerate(signals)
+            if active_signals[signal_idx]
+            for channel in signal.channels
+        }
+        gated_channels = {
+            channel
+            for channel in logical_channels
+            if not mask_indices_by_channel[channel]
+            or all(active_masks[idx] for idx in mask_indices_by_channel[channel])
+        }
+
+        flags = [0] * profile.flag_bits
+        for channel, active_high in channel_polarities.items():
+            logical_active = channel in gated_channels
+            flags[channel] = int(logical_active if active_high else not logical_active)
+        set_control_mode(flags, profile.generated_disable_mode, profile)
+
+        duration = boundaries[boundary_idx + 1] - tick
+        interval = WaveformInterval(tuple(flags), duration)
+        if intervals and intervals[-1].flags == interval.flags:
+            previous_interval = intervals[-1]
+            intervals[-1] = WaveformInterval(
+                previous_interval.flags, previous_interval.duration_ticks + duration
+            )
+        else:
+            intervals.append(interval)
+
+    return intervals, duration_ticks
+
+
+def _repeat_count(
+    intervals: list[WaveformInterval], start: int, pattern_length: int, stop: int
+) -> int:
+    """Count consecutive copies of a pattern without allocating list slices."""
+    repetitions = 1
+    while start + (repetitions + 1) * pattern_length <= stop:
+        candidate_start = start + repetitions * pattern_length
+        if any(
+            intervals[start + offset] != intervals[candidate_start + offset]
+            for offset in range(pattern_length)
+        ):
+            break
+        repetitions += 1
+    return repetitions
+
+
+def _best_repeat(
+    intervals: list[WaveformInterval],
+    start: int,
+    stop: int,
+    profile: BoardProfile,
+    max_pattern_length: int = 32,
+) -> tuple[int, int] | None:
+    """Find the most profitable adjacent repeat beginning at ``start``."""
+    best: tuple[int, int] | None = None
+    best_savings = 0
+    maximum = min(max_pattern_length, (stop - start) // 2)
+    for pattern_length in range(2, maximum + 1):
+        repetitions = _repeat_count(intervals, start, pattern_length, stop)
+        if repetitions < 2:
+            continue
+        pattern = intervals[start : start + pattern_length]
+        if pattern[0].duration_ticks < profile.minimum_cycles_for(Opcode.LOOP):
+            continue
+        if pattern[-1].duration_ticks < profile.minimum_cycles_for(Opcode.END_LOOP):
+            continue
+        if any(
+            item.duration_ticks < profile.minimum_cycles_for(Opcode.CONTINUE)
+            for item in pattern[1:-1]
+        ):
+            continue
+        savings = (repetitions - 1) * pattern_length
+        if savings > best_savings:
+            best = pattern_length, repetitions
+            best_savings = savings
+    return best
+
+
+def _instruction(
+    interval: WaveformInterval,
+    profile: BoardProfile,
+    opcode: Opcode = Opcode.CONTINUE,
+    inst_data: int = 0,
+) -> Instruction:
+    return Instruction(
+        label="",
+        flags=list(interval.flags),
+        duration=interval.duration_ticks * profile.clock_period_ns,
+        opcode=opcode,
+        inst_data=inst_data,
+    )
+
+
+def _compress_intervals(
+    intervals: list[WaveformInterval], profile: BoardProfile
+) -> list[Instruction]:
+    """Compress adjacent repeated waveform blocks with hardware loops."""
+    if not intervals:
+        raise ValueError("Waveform contains no intervals")
+
+    instructions: list[Instruction] = []
+    # Reserve the last real interval for BRANCH so the branch adds no time.
+    stop = len(intervals) - 1
+    idx = 0
+    while idx < stop:
+        repeat = _best_repeat(intervals, idx, stop, profile)
+        if repeat is None:
+            instructions.append(_instruction(intervals[idx], profile))
+            idx += 1
+            continue
+
+        pattern_length, repetitions = repeat
+        pattern = intervals[idx : idx + pattern_length]
+        while repetitions:
+            chunk = min(repetitions, profile.max_loop_iterations)
+            if chunk == 1:
+                instructions.extend(_instruction(item, profile) for item in pattern)
+            else:
+                loop_address = len(instructions)
+                for pattern_idx, item in enumerate(pattern):
+                    if pattern_idx == 0:
+                        instructions.append(
+                            _instruction(item, profile, Opcode.LOOP, chunk)
+                        )
+                    elif pattern_idx == pattern_length - 1:
+                        instructions.append(
+                            _instruction(
+                                item, profile, Opcode.END_LOOP, loop_address
+                            )
+                        )
+                    else:
+                        instructions.append(_instruction(item, profile))
+            repetitions -= chunk
+        idx += repeat[0] * repeat[1]
+
+    instructions.append(_instruction(intervals[-1], profile, Opcode.BRANCH, 0))
+    return instructions
 
 
 def minimum_duration_and_num_cycles(
@@ -85,8 +367,13 @@ def minimum_duration_and_num_cycles(
             # clean up periods to nearest integer multiples of the minimum instruction
             # length
             periods = [p - p % min_instruction_len for p in periods]
-            # round periods to nearest integer multiple ns_round ns
-            periods = [round_to_nearest_n_ns(p, ns_round) for p in periods]
+            # Round long periods to the coarse grid used to keep the common
+            # timespan manageable.  For periods shorter than that grid, use the
+            # period itself as the quantum; otherwise a valid high-frequency
+            # signal could be rounded all the way down to zero.
+            periods = [
+                round_to_nearest_n_ns(p, min(ns_round, p)) for p in periods
+            ]
 
             # lowest common multiple of all periods
             lcm_periods = lcm(*periods)
@@ -266,6 +553,7 @@ def generate_repeating_pulses(
     masking_signals: list[Signal] | None = None,
     profile: BoardProfile = ESR_PRO_250,
     progress: bool = True,
+    max_superperiod_ns: int = int(10e9),
 ) -> InstructionSequence:
     """
     Generate repeating pulse signals for a PulseBlaster sequence.
@@ -277,6 +565,8 @@ def generate_repeating_pulses(
         profile (BoardProfile, optional): hardware profile used for timing, output
                                           width, and control-bit validation.
         progress (bool, optional): show progress bar. Defaults to True.
+        max_superperiod_ns (int, optional): largest rational common timespan the
+                                           compiler may generate. Defaults to 10 s.
 
     Returns:
         InstructionSequence: dataclass containing each instruction, time per instruction
@@ -285,14 +575,8 @@ def generate_repeating_pulses(
     Raises:
         ValueError: if signals list is empty or invalid parameters provided
     """
-    # Input validation
     if not signals:
         raise ValueError("At least one signal must be provided")
-    min_instruction_len = profile.min_instruction_len_ns
-
-    c: list[list[int]] = []
-    t: list[int] = []
-
     if masking_signals is None:
         masking_signals = []
 
@@ -312,139 +596,21 @@ def generate_repeating_pulses(
             f"Invalid masking channels: {invalid_channels}"
         )
 
-    # calculating the minimum duration required to perform all pulses
-    duration, nr_cycles, frequencies_rescaled = minimum_duration_and_num_cycles(
-        signals, masking_signals, None, min_instruction_len
+    intervals, duration_ticks = _reference_intervals(
+        signals, masking_signals, profile, max_superperiod_ns
     )
+    pulse_sequence = _compress_intervals(intervals, profile)
+    try:
+        validate_sequence(pulse_sequence, profile=profile)
+    except ValueError as exc:
+        if "below minimum" in str(exc):
+            raise ValueError(
+                "Timing collision produced an interval shorter than the firmware "
+                f"minimum: {exc}"
+            ) from exc
+        raise
 
-    # copy pulses, otherwise below will overwrite inputs (which are by reference)
-    signals = deepcopy(signals)
-    masking_signals = deepcopy(masking_signals)
-
-    # set the rescaled frequencies
-    for signal, freq_rescaled in zip(
-        signals, frequencies_rescaled[: len(signals)], strict=True
-    ):
-        signal.frequency = freq_rescaled
-    if masking_signals:
-        for masking_signal, freq_rescaled in zip(
-            masking_signals,
-            frequencies_rescaled[-len(masking_signals) :],
-            strict=True,
-        ):
-            masking_signal.frequency = freq_rescaled
-
-    # calculating the offset, frequency and amount of time at high state
-    # in units of minimum_instruction_len
-    pulses_cycle_units, instruction_cycles = pulses_convert_to_instruction_length(
-        signals, min_instruction_len
-    )
-
-    # calculating the offset, frequency of the masking pulses
-    (
-        masking_pulses_cycle_units,
-        instruction_cycles_masking,
-    ) = pulses_convert_to_instruction_length(masking_signals, min_instruction_len)
-    instruction_cycles.extend(instruction_cycles_masking)
-
-    # checking whether the minimum clock cycles instruction length can be increased
-    # by checking for the greatest common denominator to speed up sequence generation
-    if instruction_cycles:
-        instruction_cycles.append(nr_cycles)
-
-    # calculate the greatest command denominator
-    gcd_cycles = gcd(*instruction_cycles)
-
-    # rescale the signals to the new minimum instruction length
-    pulses_cycle_units, masking_pulses_cycle_units = rescale_pulses(
-        gcd_cycles, pulses_cycle_units, masking_pulses_cycle_units
-    )
-
-    # rescaling the minimum instruction length by the greatest common denominator
-    min_instruction_len *= gcd_cycles
-    nr_cycles = int(duration / min_instruction_len) - 1
-
-    logging.info(f"gcd_cycles = {gcd_cycles}")
-    logging.info(f"min_instruction_len rescaled = {min_instruction_len}")
-    logging.info(f"nr_cycles = {nr_cycles}")
-
-    # generating the pulseblaster instructions
-    pulse_elapsed_cycles = [0] * len(signals)
-    masking_pulse_elapsed_cycles = [0] * len(masking_signals)
-    active_low_channels = {
-        ch for signal in signals if not signal.active_high for ch in signal.channels
-    }
-
-    for instruction_cycle in tqdm.tqdm(
-        range(nr_cycles), disable=not progress, desc="Instruction cycles"
-    ):
-        # calculating the elapsed time [minimum instruction cycles] since the start of
-        # each signal, resets when a full period has elapsed (i.e. channels_active for
-        # a channel changes from high to low)
-        channels_active, pulse_elapsed_cycles = calculate_resets(
-            pulse_elapsed_cycles, pulses_cycle_units, instruction_cycle
-        )
-
-        # calculating the elapsed time [minimum instruction cycles] since the start of
-        # each masking signal, resets when a full period has elapsed (i.e.
-        # channels_active for a channel changes from high to low)
-        (
-            channels_masking_active,
-            masking_pulse_elapsed_cycles,
-        ) = calculate_resets_masking(
-            masking_pulse_elapsed_cycles,
-            signal_channels,
-            masking_pulses_cycle_units,
-            instruction_cycle,
-        )
-
-        gated_channels = channels_active.intersection(channels_masking_active)
-        chs = [0] * profile.flag_bits
-        for channel in gated_channels:
-            chs[channel] = 1
-
-        # invert active state for channels that are configured active low
-        for channel in active_low_channels:
-            chs[channel] = 0 if chs[channel] else 1
-
-        set_control_mode(chs, profile.generated_disable_mode, profile)
-
-        if not c:
-            t.append(min_instruction_len)
-            c.append(chs)
-        elif c[-1] == chs:
-            t[-1] += min_instruction_len
-        else:
-            t.append(min_instruction_len)
-            c.append(chs)
-
-    # set all channels low for the last instruction, which will branch back to the first
-    # instruction so as to repeat the pulse sequence
-    channels_off = [0] * profile.flag_bits
-    for signal in signals:
-        if not signal.active_high:
-            for channel in signal.channels:
-                channels_off[channel] = 1
-    set_control_mode(channels_off, profile.generated_disable_mode, profile)
-
-    # Convert the time and channel state lists into Instructions
-    pulse_sequence: list[Instruction] = []
-    for t_, c_ in zip(t, c, strict=True):
-        pulse_sequence.append(
-            Instruction(
-                label="", flags=c_, duration=t_, opcode=Opcode.CONTINUE, inst_data=0
-            )
-        )
-    pulse_sequence.append(
-        Instruction(
-            label="",
-            flags=channels_off.copy(),
-            duration=min_instruction_len,
-            opcode=Opcode.BRANCH,
-            inst_data=0,
-        )
-    )
-
-    validate_sequence(pulse_sequence, profile=profile)
-
+    logging.info("superperiod_ticks = %d", duration_ticks)
+    logging.info("reference_intervals = %d", len(intervals))
+    logging.info("compressed_instructions = %d", len(pulse_sequence))
     return InstructionSequence(pulse_sequence)

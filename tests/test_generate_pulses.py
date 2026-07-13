@@ -1,9 +1,15 @@
 """Tests for generate_pulses module."""
 
+import random
+
+import numpy as np
 import pytest
 
 from pulseblaster.data_structures import InstructionSequence, Opcode, Pulse, Signal
 from pulseblaster.generate_pulses import (
+    WaveformInterval,
+    _compress_intervals,
+    _reference_intervals,
     calculate_resets,
     calculate_resets_masking,
     generate_repeating_pulses,
@@ -62,6 +68,27 @@ class TestMinimumDurationAndNumCycles:
         assert len(frequencies) == 2
         assert frequencies[0] > 0
         assert frequencies[1] > 0
+
+    def test_short_period_is_not_rounded_to_zero(self):
+        """A period shorter than the coarse rounding grid remains nonzero."""
+        signals = [
+            Signal(frequency=23, channels=[0]),
+            Signal(frequency=11.5, channels=[1]),
+            Signal(frequency=100_000, channels=[2]),
+        ]
+
+        duration, nr_cycles, frequencies = minimum_duration_and_num_cycles(
+            signals,
+            [],
+            None,
+            ESR_PRO_250.min_instruction_len_ns,
+            t_max=int(1e12),
+        )
+
+        assert duration > 0
+        assert nr_cycles > 0
+        assert frequencies[-1] > 0
+        assert frequencies[-1] == pytest.approx(100_000, rel=0.002)
 
 
 class TestPulsesConvertToInstructionLength:
@@ -339,3 +366,152 @@ class TestGenerateRepeatingPulses:
         # Should not raise any errors
         sequence = generate_repeating_pulses(signals, progress=False)
         assert isinstance(sequence, InstructionSequence)
+
+    def test_100_khz_carrier_is_compressed_with_loops(self):
+        frequency = 23
+        signals = [
+            Signal(
+                frequency=frequency,
+                offset=0,
+                high=100_000,
+                channels=[0, 7],
+            ),
+            Signal(
+                frequency=frequency,
+                offset=1_000_000,
+                high=100_000,
+                channels=[1, 4],
+            ),
+            Signal(
+                frequency=frequency,
+                offset=1_080_000,
+                high=100_000,
+                channels=[2, 5],
+            ),
+            Signal(
+                frequency=frequency / 2,
+                offset=int(1 / frequency * 1e9) - int(3e6),
+                high=int(1 / frequency * 1e9),
+                channels=[3, 6],
+            ),
+            Signal(frequency=100_000, duty_cycle=0.5, channels=[8]),
+        ]
+
+        reference, duration_ticks = _reference_intervals(signals, [], ESR_PRO_250)
+        sequence = generate_repeating_pulses(signals, progress=False)
+
+        assert duration_ticks * ESR_PRO_250.clock_period_ns == 2_000_000_000
+        assert len(reference) == 400_308
+        assert len(sequence.instructions) < ESR_PRO_250.max_program_instructions
+        assert any(
+            instruction.opcode == Opcode.LOOP
+            for instruction in sequence.instructions
+        )
+        assert int(sequence.duration.sum()) == 2_000_000_000
+
+        reference_duration = np.asarray(
+            [item.duration_ticks * ESR_PRO_250.clock_period_ns for item in reference]
+        )
+        reference_flags = np.asarray([item.flags for item in reference])
+        assert np.array_equal(sequence.duration, reference_duration)
+        assert np.array_equal(sequence.flags, reference_flags)
+
+        carrier = sequence.flags[:, 8]
+        trigger = sequence.flags[:, 0]
+        assert np.count_nonzero((carrier == 1) & (np.roll(carrier, 1) == 0)) == 200_000
+        assert np.count_nonzero((trigger == 1) & (np.roll(trigger, 1) == 0)) == 46
+
+    def test_timing_collision_reports_clear_error(self):
+        signals = [
+            Signal(frequency=100_000, duty_cycle=0.5, channels=[0]),
+            Signal(frequency=1, offset=5_004, high=100, channels=[1]),
+        ]
+
+        with pytest.raises(ValueError, match="Timing collision"):
+            generate_repeating_pulses(signals, progress=False)
+
+    def test_superperiod_limit_is_configurable(self):
+        signals = [
+            Signal(frequency=10, channels=[0]),
+            Signal(frequency=15, channels=[1]),
+        ]
+
+        with pytest.raises(ValueError, match="Common timespan"):
+            generate_repeating_pulses(
+                signals, progress=False, max_superperiod_ns=100_000_000
+            )
+
+    def test_loop_counts_are_split_at_profile_limit(self):
+        profile = BoardProfile(max_loop_iterations=3)
+        high_flags = tuple([1, *([0] * 23)])
+        low_flags = tuple([0] * 24)
+        pattern = [
+            WaveformInterval(high_flags, 100),
+            WaveformInterval(low_flags, 100),
+        ]
+        intervals = pattern * 8 + [WaveformInterval(low_flags, 100)]
+
+        instructions = _compress_intervals(intervals, profile)
+
+        assert [
+            instruction.inst_data
+            for instruction in instructions
+            if instruction.opcode == Opcode.LOOP
+        ] == [3, 3, 2]
+
+    def test_masking_signal_gates_only_its_high_window(self):
+        signal = Signal(frequency=10, duty_cycle=0.5, channels=[0])
+        mask = Signal(frequency=20, duty_cycle=0.25, channels=[0])
+
+        sequence = generate_repeating_pulses(
+            [signal], masking_signals=[mask], progress=False
+        )
+
+        high_duration = int(sequence.duration[sequence.flags[:, 0] == 1].sum())
+        assert high_duration == 12_500_000
+
+    def test_overlapping_signals_on_a_channel_are_combined_with_or(self):
+        signals = [
+            Signal(frequency=10, duty_cycle=0.5, channels=[0]),
+            Signal(frequency=20, duty_cycle=0.5, channels=[0]),
+        ]
+
+        sequence = generate_repeating_pulses(signals, progress=False)
+
+        high_duration = int(sequence.duration[sequence.flags[:, 0] == 1].sum())
+        assert high_duration == 75_000_000
+
+    def test_active_low_signal_is_physically_inverted(self):
+        signal = Signal(
+            frequency=10, duty_cycle=0.5, channels=[0], active_high=False
+        )
+
+        sequence = generate_repeating_pulses([signal], progress=False)
+
+        assert sequence.flags[0, 0] == 0
+        assert sequence.flags[-1, 0] == 1
+        high_duration = int(sequence.duration[sequence.flags[:, 0] == 1].sum())
+        assert high_duration == 50_000_000
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_loop_compression_matches_reference_for_generated_cases(self, seed):
+        rng = random.Random(seed)
+        signals = [
+            Signal(
+                frequency=rng.choice([10, 20, 50, 100]),
+                duty_cycle=rng.choice([0.25, 0.5, 0.75]),
+                channels=[channel],
+                active_high=rng.choice([True, False]),
+            )
+            for channel in range(4)
+        ]
+
+        reference, _ = _reference_intervals(signals, [], ESR_PRO_250)
+        sequence = generate_repeating_pulses(signals, progress=False)
+        reference_duration = np.asarray(
+            [item.duration_ticks * ESR_PRO_250.clock_period_ns for item in reference]
+        )
+        reference_flags = np.asarray([item.flags for item in reference])
+
+        assert np.array_equal(sequence.duration, reference_duration)
+        assert np.array_equal(sequence.flags, reference_flags)

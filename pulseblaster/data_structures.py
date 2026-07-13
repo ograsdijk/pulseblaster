@@ -234,12 +234,55 @@ def unroll_duration_flags(
 @dataclass(frozen=True)
 class InstructionSequence:
     instructions: list[Instruction]
-    duration: npt.NDArray[np.int_] = field(init=False)
-    flags: npt.NDArray[np.int_] = field(init=False)
-    branch_index: int | None = field(init=False)
+    _duration: npt.NDArray[np.int_] | None = field(
+        init=False, default=None, repr=False, compare=False
+    )
+    _flags: npt.NDArray[np.int_] | None = field(
+        init=False, default=None, repr=False, compare=False
+    )
+    _branch_index: int | None = field(
+        init=False, default=None, repr=False, compare=False
+    )
+    _unrolled: bool = field(init=False, default=False, repr=False, compare=False)
 
-    def __post_init__(self):
+    def _ensure_unrolled(self) -> None:
+        """Materialize executed timing data only when a caller requests it."""
+        if self._unrolled:
+            return
         duration, flags, branch_index = unroll_duration_flags(self.instructions)
-        object.__setattr__(self, "duration", duration)
-        object.__setattr__(self, "flags", flags)
-        object.__setattr__(self, "branch_index", branch_index)
+        object.__setattr__(self, "_duration", duration)
+        object.__setattr__(self, "_flags", flags)
+        object.__setattr__(self, "_branch_index", branch_index)
+        object.__setattr__(self, "_unrolled", True)
+
+    @property
+    def program_instruction_count(self) -> int:
+        """Number of instruction words stored on the board."""
+        return len(self.instructions)
+
+    @property
+    def executed_instruction_count(self) -> int:
+        """Number of intervals executed during one pass before the final branch."""
+        return len(self.duration)
+
+    @property
+    def total_duration_ns(self) -> int:
+        """Duration of one complete execution pass in nanoseconds."""
+        return int(self.duration.sum())
+
+    @property
+    def duration(self) -> npt.NDArray[np.int_]:
+        self._ensure_unrolled()
+        assert self._duration is not None
+        return self._duration
+
+    @property
+    def flags(self) -> npt.NDArray[np.int_]:
+        self._ensure_unrolled()
+        assert self._flags is not None
+        return self._flags
+
+    @property
+    def branch_index(self) -> int | None:
+        self._ensure_unrolled()
+        return self._branch_index

@@ -30,8 +30,11 @@ class TestBoardProfile:
         assert ESR_PRO_250.flag_bits == 24
         assert ESR_PRO_250.output_bits == 21
         assert ESR_PRO_250.control_bits == (21, 22, 23)
-        assert ESR_PRO_250.min_instruction_cycles == 6
-        assert ESR_PRO_250.min_instruction_len_ns == 24
+        assert ESR_PRO_250.clock_period_ns == 4
+        assert ESR_PRO_250.min_instruction_cycles == 5
+        assert ESR_PRO_250.min_instruction_len_ns == 20
+        assert ESR_PRO_250.minimum_cycles_for(Opcode.CONTINUE) == 7
+        assert ESR_PRO_250.max_program_instructions == 4096
         assert ESR_PRO_250.short_pulse_disable_modes == frozenset({0, 7})
 
     def test_control_bits_must_be_valid(self):
@@ -42,31 +45,53 @@ class TestBoardProfile:
 class TestValidateSequence:
     def test_active_output_with_on_disable_mode_is_valid(self):
         instructions = [
-            Instruction("", _flags([0], control_mode=7), 24, Opcode.CONTINUE, 0),
+            Instruction("", _flags([0], control_mode=7), 28, Opcode.CONTINUE, 0),
             Instruction("", _flags(control_mode=7), 24, Opcode.BRANCH, 0),
         ]
         validate_sequence(instructions)
 
     def test_active_output_with_zero_disable_mode_is_valid(self):
-        instructions = [Instruction("", _flags([0], control_mode=0), 24, Opcode.STOP, 0)]
+        instructions = [Instruction("", _flags([0], control_mode=0), 28, Opcode.STOP, 0)]
         validate_sequence(instructions)
 
     def test_invalid_control_mode_rejected(self):
-        instructions = [Instruction("", _flags([0], control_mode=6), 24, Opcode.STOP, 0)]
+        instructions = [Instruction("", _flags([0], control_mode=6), 28, Opcode.STOP, 0)]
         with pytest.raises(ValueError, match="invalid control mode"):
             validate_sequence(instructions)
 
-    def test_short_pulse_mode_requires_matching_duration(self):
-        instructions = [Instruction("", _flags([0], control_mode=5), 24, Opcode.STOP, 0)]
-        with pytest.raises(ValueError, match="expected mode 6"):
-            validate_sequence(instructions)
+    def test_short_pulse_mode_requires_sufficient_duration(self):
+        profile = BoardProfile(
+            min_instruction_cycles=1, opcode_min_instruction_cycles=()
+        )
+        instructions = [
+            Instruction(
+                "", _flags([0], control_mode=5, profile=profile), 16, Opcode.STOP, 0
+            )
+        ]
+        with pytest.raises(ValueError, match="duration is only 4 cycles"):
+            validate_sequence(instructions, profile=profile)
+
+    def test_short_pulse_mode_can_be_shorter_than_instruction(self):
+        instructions = [Instruction("", _flags([0], control_mode=5), 28, Opcode.STOP, 0)]
+        validate_sequence(instructions)
 
     def test_short_pulse_mode_with_matching_duration_is_valid(self):
-        profile = BoardProfile(min_instruction_cycles=1)
+        profile = BoardProfile(
+            min_instruction_cycles=1, opcode_min_instruction_cycles=()
+        )
         instructions = [
             Instruction("", _flags([0], control_mode=5, profile=profile), 20, Opcode.STOP, 0)
         ]
         validate_sequence(instructions, profile=profile)
+
+    def test_program_memory_limit_is_enforced(self):
+        profile = BoardProfile(max_program_instructions=1)
+        instructions = [
+            Instruction("", _flags(profile=profile), 28, Opcode.CONTINUE, 0),
+            Instruction("", _flags(profile=profile), 20, Opcode.BRANCH, 0),
+        ]
+        with pytest.raises(ValueError, match="exceeding 1"):
+            validate_sequence(instructions, profile=profile)
 
     def test_duration_must_align_to_clock(self):
         instructions = [Instruction("", _flags([0], control_mode=7), 25, Opcode.STOP, 0)]
@@ -82,12 +107,12 @@ class TestValidateSequence:
         profile = BoardProfile(output_bits=20)
         flags = _flags(control_mode=7, profile=profile)
         flags[20] = 1
-        instructions = [Instruction("", flags, 24, Opcode.STOP, 0)]
+        instructions = [Instruction("", flags, 28, Opcode.STOP, 0)]
         with pytest.raises(ValueError, match="non-output flag bits"):
             validate_sequence(instructions, profile=profile)
 
     def test_long_delay_multiplier_must_be_at_least_two(self):
-        instructions = [Instruction("", _flags(control_mode=7), 24, Opcode.LONG_DELAY, 1)]
+        instructions = [Instruction("", _flags(control_mode=7), 28, Opcode.LONG_DELAY, 1)]
         with pytest.raises(ValueError, match="LONG_DELAY multiplier"):
             validate_sequence(instructions)
 
@@ -103,7 +128,7 @@ class TestValidateSequence:
     def test_end_loop_must_match_latest_loop(self):
         instructions = [
             Instruction("", _flags([0]), 24, Opcode.LOOP, 2),
-            Instruction("", _flags([0]), 24, Opcode.CONTINUE, 0),
+            Instruction("", _flags([0]), 28, Opcode.CONTINUE, 0),
             Instruction("", _flags([0]), 24, Opcode.END_LOOP, 1),
         ]
         with pytest.raises(ValueError, match="expected 0"):
@@ -112,10 +137,22 @@ class TestValidateSequence:
     def test_missing_end_loop_raises(self):
         instructions = [
             Instruction("", _flags([0]), 24, Opcode.LOOP, 2),
-            Instruction("", _flags([0]), 24, Opcode.STOP, 0),
+            Instruction("", _flags([0]), 28, Opcode.STOP, 0),
         ]
         with pytest.raises(ValueError, match="Missing END_LOOP"):
             validate_sequence(instructions)
+
+    def test_loop_depth_limit_is_enforced(self):
+        profile = BoardProfile(max_loop_depth=1)
+        instructions = [
+            Instruction("", _flags(profile=profile), 20, Opcode.LOOP, 2),
+            Instruction("", _flags(profile=profile), 20, Opcode.LOOP, 2),
+            Instruction("", _flags(profile=profile), 20, Opcode.END_LOOP, 1),
+            Instruction("", _flags(profile=profile), 20, Opcode.END_LOOP, 0),
+        ]
+
+        with pytest.raises(ValueError, match="maximum loop depth"):
+            validate_sequence(instructions, profile=profile)
 
     def test_wait_not_first(self):
         instructions = [Instruction("", _flags(control_mode=7), 24, Opcode.WAIT, 0)]

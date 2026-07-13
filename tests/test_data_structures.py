@@ -271,6 +271,20 @@ class TestInstructionSequence:
         assert len(seq.flags) == 2
         assert seq.branch_index is None
 
+    def test_instruction_sequence_unrolling_is_lazy(self):
+        instructions = [
+            Instruction("", [0] * 24, 100, Opcode.CONTINUE, 0),
+            Instruction("", [0] * 24, 100, Opcode.STOP, 0),
+        ]
+        sequence = InstructionSequence(instructions)
+
+        assert sequence._unrolled is False
+        assert sequence.program_instruction_count == 2
+        assert np.array_equal(sequence.duration, [100, 100])
+        assert sequence._unrolled is True
+        assert sequence.executed_instruction_count == 2
+        assert sequence.total_duration_ns == 200
+
     def test_instruction_sequence_with_branch(self):
         """Test InstructionSequence with branch."""
         instructions = [

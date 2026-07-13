@@ -16,6 +16,21 @@ The default `ESR_PRO_250` profile models a 250 MHz PulseBlasterESR-PRO:
 Generated normal instructions set the control bits to `ON` (`111`) to disable
 short-pulse gating.
 
+The generator schedules transitions on the 4 ns hardware clock and uses rational
+frequency analysis to find the complete repeating superperiod. Non-integer-clock
+periods are phase-accumulated across that superperiod, preserving the requested
+average frequency with at most one clock tick of individual-period variation.
+
+Repeated output blocks are compiled to hardware `LOOP`/`END_LOOP` instructions.
+This is particularly useful when a fast carrier runs while slower channels remain
+stationary: the carrier pattern is stored once for each slow-channel state instead of
+being expanded into every edge. The default profile enforces the 4096-word program
+memory and eight-level loop limit.
+
+The current optimizer targets consecutive repeated blocks. `LONG_DELAY`, nested-loop
+factoring, and `JSR`/`RTS` deduplication are represented and validated by the package
+but are not yet emitted automatically by `generate_repeating_pulses`.
+
 `masking_signals` act as periodic gating signals: their channels must be a subset of the
 base `signals` channels, and they enable the associated base channels only during the
 mask pulse high window.
@@ -69,7 +84,9 @@ Validation checks include:
 Unlike raw SpinAPI, which rounds instruction durations to the nearest clock cycle, this
 package validates durations strictly. Custom or parsed instructions must already be
 aligned to the selected `BoardProfile` clock. For `ESR_PRO_250`, durations must be
-multiples of 4 ns and at least 24 ns.
+multiples of 4 ns. The firmware minimum is opcode-specific: `LOOP`, `END_LOOP`, and
+`BRANCH` can use the five-cycle (20 ns) base minimum, while `CONTINUE`, `JSR`, `RTS`,
+`LONG_DELAY`, `WAIT`, and `STOP` require seven cycles (28 ns).
 
 You can also validate custom instruction lists directly:
 

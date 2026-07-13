@@ -10,18 +10,30 @@ from .data_structures import Instruction, Opcode
 class BoardProfile:
     """Hardware and firmware constraints used to validate and emit instructions."""
 
-    name: str = "PulseBlasterESR-PRO 250 MHz"
+    name: str = "PulseBlasterESR-PRO 250 MHz USB-RM (design 24-8)"
     clock_mhz: float = 250.0
     flag_bits: int = 24
     output_bits: int = 21
     control_bits: tuple[int, int, int] = (21, 22, 23)
-    min_instruction_cycles: int = 6
+    min_instruction_cycles: int = 5
+    opcode_min_instruction_cycles: tuple[tuple[int, int], ...] = (
+        (int(Opcode.CONTINUE), 7),
+        (int(Opcode.STOP), 7),
+        (int(Opcode.JSR), 7),
+        (int(Opcode.RTS), 7),
+        (int(Opcode.LONG_DELAY), 7),
+        (int(Opcode.WAIT), 7),
+    )
     max_short_cycles: int = 5
     short_pulse_disable_modes: frozenset[int] = field(default_factory=lambda: frozenset({0, 7}))
     generated_disable_mode: int = 7
     wait_not_first: bool = True
     max_inst_data: int = (1 << 20) - 1
     max_delay_cycles: int = (1 << 32) - 1
+    max_program_instructions: int = 4_096
+    max_loop_iterations: int = (1 << 20) - 1
+    max_loop_depth: int = 8
+    max_subroutine_depth: int = 8
     max_unrolled_instructions: int = 1_000_000
 
     def __post_init__(self) -> None:
@@ -49,6 +61,27 @@ class BoardProfile:
         if self.max_delay_cycles <= 0:
             raise ValueError(
                 f"max_delay_cycles must be positive, got {self.max_delay_cycles}"
+            )
+        if self.max_program_instructions <= 0:
+            raise ValueError(
+                "max_program_instructions must be positive, "
+                f"got {self.max_program_instructions}"
+            )
+        if self.max_loop_iterations <= 0:
+            raise ValueError(
+                f"max_loop_iterations must be positive, got {self.max_loop_iterations}"
+            )
+        if self.max_loop_iterations > self.max_inst_data:
+            raise ValueError(
+                "max_loop_iterations cannot exceed max_inst_data, "
+                f"got {self.max_loop_iterations} > {self.max_inst_data}"
+            )
+        if self.max_loop_depth <= 0:
+            raise ValueError(f"max_loop_depth must be positive, got {self.max_loop_depth}")
+        if self.max_subroutine_depth <= 0:
+            raise ValueError(
+                "max_subroutine_depth must be positive, "
+                f"got {self.max_subroutine_depth}"
             )
         if self.max_unrolled_instructions <= 0:
             raise ValueError(
@@ -78,6 +111,15 @@ class BoardProfile:
                 "generated_disable_mode must be one of short_pulse_disable_modes, "
                 f"got {self.generated_disable_mode}"
             )
+        invalid_opcode_minimums = [
+            (opcode, cycles)
+            for opcode, cycles in self.opcode_min_instruction_cycles
+            if opcode not in {int(member) for member in Opcode} or cycles <= 0
+        ]
+        if invalid_opcode_minimums:
+            raise ValueError(
+                f"Invalid opcode minimum instruction cycles: {invalid_opcode_minimums}"
+            )
 
     @property
     def min_instruction_len_ns(self) -> int:
@@ -89,6 +131,24 @@ class BoardProfile:
                 f"{self.name} minimum instruction length is not an integer ns value: {value}"
             )
         return int(rounded)
+
+    @property
+    def clock_period_ns(self) -> int:
+        """Hardware timing resolution in nanoseconds."""
+        value = 1_000 / self.clock_mhz
+        rounded = round(value)
+        if abs(value - rounded) > 1e-9:
+            raise ValueError(
+                f"{self.name} clock period is not an integer ns value: {value}"
+            )
+        return int(rounded)
+
+    def minimum_cycles_for(self, opcode: Opcode | int) -> int:
+        """Return the firmware minimum duration for an opcode."""
+        opcode_value = int(opcode)
+        return dict(self.opcode_min_instruction_cycles).get(
+            opcode_value, self.min_instruction_cycles
+        )
 
 
 ESR_PRO_250 = BoardProfile()
@@ -132,6 +192,11 @@ def validate_sequence(
 
     if profile.wait_not_first and instructions[0].opcode == Opcode.WAIT:
         raise ValueError("WAIT is not allowed as the first instruction")
+    if nr_instructions > profile.max_program_instructions:
+        raise ValueError(
+            f"Program has {nr_instructions} instructions, exceeding "
+            f"{profile.max_program_instructions} for {profile.name}"
+        )
 
     short_pulse_modes = set(range(1, profile.max_short_cycles + 1))
 
@@ -184,10 +249,11 @@ def validate_sequence(
                 f"max_delay_cycles {profile.max_delay_cycles} "
                 f"without LONG_DELAY opcode"
             )
-        if cycles < profile.min_instruction_cycles:
+        minimum_cycles = profile.minimum_cycles_for(opcode)
+        if cycles < minimum_cycles:
             raise ValueError(
                 f"Instruction {idx} has {cycles} cycles, below minimum "
-                f"{profile.min_instruction_cycles}"
+                f"{minimum_cycles} for {opcode.name}"
             )
 
         if opcode in {Opcode.BRANCH, Opcode.JSR, Opcode.END_LOOP}:
@@ -201,6 +267,14 @@ def validate_sequence(
                 f"Instruction {idx} LOOP iterations must be positive, "
                 f"got {instruction.inst_data}"
             )
+        if (
+            opcode == Opcode.LOOP
+            and instruction.inst_data > profile.max_loop_iterations
+        ):
+            raise ValueError(
+                f"Instruction {idx} LOOP iterations {instruction.inst_data} exceed "
+                f"maximum {profile.max_loop_iterations}"
+            )
         if opcode == Opcode.LONG_DELAY and instruction.inst_data < 2:
             raise ValueError(
                 f"Instruction {idx} LONG_DELAY multiplier must be at least 2, "
@@ -209,6 +283,11 @@ def validate_sequence(
 
         if opcode == Opcode.LOOP:
             loop_stack.append(idx)
+            if len(loop_stack) > profile.max_loop_depth:
+                raise ValueError(
+                    f"Instruction {idx} exceeds maximum loop depth "
+                    f"{profile.max_loop_depth}"
+                )
         elif opcode == Opcode.END_LOOP:
             if not loop_stack:
                 raise ValueError(f"Instruction {idx} END_LOOP has no matching LOOP")
@@ -247,11 +326,6 @@ def validate_sequence(
                 raise ValueError(
                     f"Instruction {idx} uses short-pulse mode {control_mode} cycles, "
                     f"but duration is only {cycles} cycles"
-                )
-            if cycles != control_mode:
-                raise ValueError(
-                    f"Instruction {idx} has duration {cycles} cycles but control mode "
-                    f"{control_mode}; expected mode {cycles}"
                 )
         if output_active and control_mode not in short_pulse_modes | profile.short_pulse_disable_modes:
             raise ValueError(
