@@ -80,13 +80,11 @@ class BoardProfile:
             raise ValueError(f"max_loop_depth must be positive, got {self.max_loop_depth}")
         if self.max_subroutine_depth <= 0:
             raise ValueError(
-                "max_subroutine_depth must be positive, "
-                f"got {self.max_subroutine_depth}"
+                f"max_subroutine_depth must be positive, got {self.max_subroutine_depth}"
             )
         if self.max_unrolled_instructions <= 0:
             raise ValueError(
-                "max_unrolled_instructions must be positive, "
-                f"got {self.max_unrolled_instructions}"
+                f"max_unrolled_instructions must be positive, got {self.max_unrolled_instructions}"
             )
         if len(self.control_bits) != 3:
             raise ValueError(f"control_bits must contain exactly 3 indices, got {self.control_bits}")
@@ -153,6 +151,25 @@ class BoardProfile:
 
 ESR_PRO_250 = BoardProfile()
 DEFAULT_BOARD_PROFILE = ESR_PRO_250
+BOARD_PROFILES: dict[str, BoardProfile] = {
+    "ESR_PRO_250": ESR_PRO_250,
+}
+
+
+def get_board_profile(profile: str | BoardProfile) -> BoardProfile:
+    """Resolve a stable profile key to a board profile.
+
+    ``BoardProfile`` instances pass through unchanged so programmatic users can
+    still supply custom hardware profiles. String selection is intended for
+    configuration layers such as YAML-based experiment-control drivers.
+    """
+    if isinstance(profile, BoardProfile):
+        return profile
+    try:
+        return BOARD_PROFILES[profile]
+    except KeyError as exc:
+        available = ", ".join(sorted(BOARD_PROFILES))
+        raise ValueError(f"Unknown board profile {profile!r}; available: {available}") from exc
 
 
 def _duration_ns_to_cycles(duration_ns: int, clock_mhz: float) -> float:
@@ -282,7 +299,7 @@ def validate_sequence(
             raise ValueError(
                 f"Instruction {idx} delay count {cycles} exceeds "
                 f"max_delay_cycles {profile.max_delay_cycles} "
-                f"without LONG_DELAY opcode"
+                "without LONG_DELAY opcode"
             )
         minimum_cycles = profile.minimum_cycles_for(opcode)
         if cycles < minimum_cycles:
@@ -302,10 +319,7 @@ def validate_sequence(
                 f"Instruction {idx} LOOP iterations must be positive, "
                 f"got {instruction.inst_data}"
             )
-        if (
-            opcode == Opcode.LOOP
-            and instruction.inst_data > profile.max_loop_iterations
-        ):
+        if opcode == Opcode.LOOP and instruction.inst_data > profile.max_loop_iterations:
             raise ValueError(
                 f"Instruction {idx} LOOP iterations {instruction.inst_data} exceed "
                 f"maximum {profile.max_loop_iterations}"
@@ -368,9 +382,7 @@ def validate_sequence(
             )
 
     if loop_stack:
-        raise ValueError(
-            f"Missing END_LOOP for LOOP at instruction index {loop_stack[-1]}"
-        )
+        raise ValueError(f"Missing END_LOOP for LOOP at instruction index {loop_stack[-1]}")
 
     subroutine_depth = _maximum_subroutine_depth(instructions)
     if subroutine_depth > profile.max_subroutine_depth:
