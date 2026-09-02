@@ -3,8 +3,6 @@
 Python interface for a Spincore PulseBlaster pulse generator.  
 Only tested with the PulseBlaster ESR-PRO USB 250 MHz.
 
-
-
 ## Examples
 
 ### Generating a pulse sequence
@@ -15,6 +13,11 @@ The default `ESR_PRO_250` profile models a 250 MHz PulseBlasterESR-PRO:
 24 flag bits, 21 user output bits (`0..20`), and short-pulse control bits `21..23`.
 Generated normal instructions set the control bits to `ON` (`111`) to disable
 short-pulse gating.
+
+Hardware objects can take either a `BoardProfile` object or a stable profile key such
+as `"ESR_PRO_250"`. Configuration layers should use the key and let the package resolve
+the actual profile, so compilation, validation, and hardware programming use the same
+clock and firmware constraints.
 
 The generator schedules transitions on the 4 ns hardware clock and uses rational
 frequency analysis to find the complete repeating superperiod. Non-integer-clock
@@ -97,7 +100,7 @@ flashlamp = Signal(
     frequency=50, offset=0, high=int(1e6), channels=[1, 3], active_high=True
 )
 
-# 50 Hz signal to be output on channels 2&4, which is offset by 90 us w.r.t to the 
+# 50 Hz signal to be output on channels 2&4, which is offset by 90 us w.r.t to the
 # previous signal, high for 1 ms
 qswitch = Signal(
     frequency=50,
@@ -149,24 +152,45 @@ from pulseblaster import ESR_PRO_250, validate_sequence
 validate_sequence(sequence.instructions, profile=ESR_PRO_250)
 ```
 
-### Programming
-The code below shows how to program the PulseBlaster with a sequence and starts the sequence.
+### Programming and hardware lifecycle
+
+Select the board and hardware profile when constructing a hardware object, program a
+validated instruction sequence, and use the explicit lifecycle methods to control
+execution. SpinAPI keeps board selection in process-global state; this package
+reselects the object's board and serializes each hardware operation so multiple board
+objects cannot silently redirect one another's commands.
 
 ```python
 from pulseblaster import PulseBlaster
 
-# initialize the connection
-pulse_gen = PulseBlaster(board_number = 0)
-
-# program the sequence on the device
-pulse_gen.program(sequence = sequence.instructions)
-
-# start the sequence
+pulse_gen = PulseBlaster(board_number=0, profile="ESR_PRO_250")
+pulse_gen.program(sequence.instructions)
 pulse_gen.start()
+
+status = pulse_gen.status
+print(status.state, status.raw)
+
+pulse_gen.stop()
+pulse_gen.reset()
+pulse_gen.close()
 ```
 
+`status` is a `PulseBlasterStatus` containing one canonical `state` plus the raw
+SpinAPI bit mask in `raw`. The state is one of `idle`, `waiting`, `running`, `stopped`,
+`reset`, or `unknown`. SpinAPI status bits are not mutually exclusive, so the package
+uses `waiting` before `running`, then `stopped`. Bit 1 is high after initialization and
+low after reset until the next trigger; with no execution/stopped bit set, those cases
+map to `idle` and `reset`, respectively. `raw_status` remains available when the bit
+mask itself is needed.
+
+`stop()` stops instruction execution but does **not** force TTL outputs low; SpinCore
+specifies that TTL outputs remain at the levels present when the stop command is
+received. `close()` only releases the SpinAPI connection and deliberately does **not**
+stop a running program. Stopping execution and disconnecting are therefore separate
+lifecycle actions.
+
 ### Reading PulseBlaster Interpreter code
-PulseBlaster Interpreter code can be read, converted into a sequence of instructions and plotted: 
+PulseBlaster Interpreter code can be read, converted into a sequence of instructions and plotted:
 ```Python
 import matplotlib.pyplot as plt
 
