@@ -130,6 +130,55 @@ plt.show()
 ```
 ![](images/sequence.png)
 
+A pulse must fit inside its own period: `offset + high` may not exceed `1 / frequency`.
+The compiler does not wrap a pulse into the next period, so `Signal` and the compiler
+both reject such pulses instead of silently cutting them short.
+
+### Profiles: named, parameterised sequences
+`pulseblaster.profiles` describes a sequence in YAML by name instead of raw
+nanosecond offsets. Params are named numbers that a scan can override; signal and
+gate fields are arithmetic expressions (`+ - * /`, parentheses) over numbers, params,
+and the `.start`, `.end`, `.high` and `.period` of rows defined above. Times are in
+microseconds. Gates become `masking_signals`.
+
+```yaml
+name: yag_23hz
+params:
+  rep_rate_hz: {value: 23, unit: Hz}
+  qswitch_delay_us: {value: 80, unit: us, min: 20, max: 300}
+signals:
+  - {name: flashlamp, channels: [flashlamp], frequency_hz: rep_rate_hz, start_us: 1000, high_us: 100}
+  - {name: qswitch, channels: [qswitch], frequency_hz: rep_rate_hz,
+     start_us: flashlamp.start + qswitch_delay_us, high_us: 100}
+  - {name: carrier, channels: [8], frequency_hz: 100000, start_us: 0, duty_cycle_percent: 50}
+compile:
+  optimization: basic
+```
+
+```python
+from pulseblaster import profiles
+
+profile = profiles.load_profile("yag_23hz.yaml")
+resolved = profiles.resolve_profile(
+    profile, channel_map={"flashlamp": 1, "qswitch": 2}, params={"qswitch_delay_us": 95}
+)
+for issue in resolved.issues:          # every problem at once, e.g. a pulse past its period
+    print(issue.name, issue.message)
+signals, masks = profiles.to_signals(resolved)
+key = profiles.program_key(resolved)   # identifies the compiled program
+```
+
+Expressions are evaluated with a restricted AST walker; nothing else can run.
+`program_key` is computed from the compiler inputs and the package version, so
+reformatting a file or renaming a param keeps the key, while any timing or compiler
+change produces a new one.
+
+`pulseblaster.program_cache` keeps compiled programs on disk, one JSON file per key.
+`compile_to_cache` is a top-level function meant for a low-priority
+`ProcessPoolExecutor` worker (`lower_process_priority` as its initializer), so a long
+compile never blocks the caller. `compiled_timeline` returns the output transitions of a
+cached program in a time window, for plotting what the board will actually output.
+
 ### Sequence validation
 Generated and parsed sequences are validated before use.
 Validation checks include:

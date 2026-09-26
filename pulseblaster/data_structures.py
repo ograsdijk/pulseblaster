@@ -7,6 +7,7 @@ signals, instructions, and sequences for the PulseBlaster hardware.
 
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from fractions import Fraction
 
 import numpy as np
 import numpy.typing as npt
@@ -80,6 +81,28 @@ class Signal:
             raise ValueError(
                 f"Pulse high {self.high:.0e} >= period {1/self.frequency * 1e9:.0e}"
             )
+        check_pulse_within_period(self)
+
+
+def check_pulse_within_period(signal: "Signal") -> None:
+    """Reject pulses that would run past the end of their period.
+
+    The compiler schedules each pulse from ``offset`` within its own period and
+    does not wrap a pulse into the next period, so such a pulse would be cut
+    short at the end of the superperiod instead of continuing.
+    """
+    period_ns = Fraction(1_000_000_000) / Fraction(str(signal.frequency))
+    high_ns = (
+        period_ns * Fraction(str(signal.duty_cycle))
+        if getattr(signal, "_duty_cycle_set", False)
+        else Fraction(signal.high)
+    )
+    if signal.offset + high_ns > period_ns:
+        raise ValueError(
+            f"Pulse on channels {signal.channels} runs past the end of its period: "
+            f"offset + high = {float(signal.offset + high_ns):.0f} ns > "
+            f"period {float(period_ns):.0f} ns. Keep offset + high within one period."
+        )
 
 
 class Opcode(IntEnum):
