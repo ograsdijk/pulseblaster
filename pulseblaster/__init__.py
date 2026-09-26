@@ -8,7 +8,7 @@ This package provides tools for:
 - Converting assembly code to instructions
 """
 
-from . import generate_pulses
+from . import generate_pulses, profiles, program_cache
 from .data_structures import (
     CompilationReport,
     Instruction,
@@ -30,6 +30,8 @@ from .validation import (
 
 __all__ = [
     "generate_pulses",
+    "profiles",
+    "program_cache",
     "Signal",
     "Instruction",
     "InstructionSequence",

@@ -23,6 +23,7 @@ from .data_structures import (
     OptimizationLevel,
     Pulse,
     Signal,
+    check_pulse_within_period,
 )
 from .utils import round_to_nearest_n_ns
 from .validation import (
@@ -159,6 +160,9 @@ def _iter_signal_events(
         raise ValueError(
             f"Signal on channels {signal.channels} has invalid quantized high time"
         )
+    # Signals can be mutated after construction, so re-check here: a pulse that
+    # runs past its period would otherwise be silently cut at the superperiod end.
+    check_pulse_within_period(signal)
 
     denominator = lcm(
         period_ticks.denominator,
