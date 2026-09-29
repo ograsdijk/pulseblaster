@@ -201,6 +201,28 @@ from pulseblaster import ESR_PRO_250, validate_sequence
 validate_sequence(sequence.instructions, profile=ESR_PRO_250)
 ```
 
+### Windows SpinAPI runtime
+
+On the CeNTREX Windows acquisition computer, SpinAPI 20171214's legacy PCI/WinDriver
+scan caused an approximately 12 second system freeze before USB board discovery. For
+USB-only PulseBlaster systems, generate the validated local DLL from the original
+SpinCore `spinapi64.dll`:
+
+```powershell
+python -m pulseblaster.spinapi_patch "C:\path\to\original\spinapi64.dll"
+```
+
+This writes `pulseblaster/_vendor/spinapi64_usb_only.dll`. On Windows, importing
+`pulseblaster` will load that DLL explicitly before the upstream `spinapi` wrapper
+performs its normal system-wide lookup. The DLL itself is not committed to this public
+repository.
+
+An explicit DLL can instead be selected with `PULSEBLASTER_SPINAPI_DLL`. The patch is
+USB-only and must not be used on a computer that needs a SpinCore PCI/PCIe board.
+
+See [the 2026-09-29 incident report](docs/spinapi_win_driver_freeze_2026-09-29.md) for
+the diagnosis, validated SHA-256 hashes, exact byte patch, verification, and rollback.
+
 ### Programming and hardware lifecycle
 
 Select the board and hardware profile when constructing a hardware object, program a
