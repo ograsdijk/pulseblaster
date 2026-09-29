@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import ctypes.util
 import hashlib
+import os
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 ORIGINAL_SHA256 = "4853c8e15df34d6f5c3e421a7ee3cd7dddc708410cdb2e2351d900edb61f8c9c"
@@ -65,10 +68,93 @@ def patch_spinapi(source: Path, output: Path) -> Path:
         raise RuntimeError(
             f"Refusing to overwrite {output}: it is not a USB-only SpinAPI copy."
         )
+    if output.exists():
+        return output
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(patched)
+    # Write next to the target and rename, so a crash never leaves a partial DLL.
+    temporary = output.with_name(f"{output.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(patched)
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
 
     return output
+
+
+class SpinapiCopyError(RuntimeError):
+    """No installed SpinAPI DLL could be turned into the USB-only copy."""
+
+
+def installed_spinapi_candidates(explicit: str | os.PathLike[str] | None = None) -> list[Path]:
+    """Paths where the installed ``spinapi64.dll`` may live, in search order.
+
+    Only paths are returned. The DLLs are never loaded, because loading one would
+    bind the spinapi wrapper to it and block ``use_spinapi_dll``.
+    """
+    found: list[Path] = []
+    if explicit:
+        found.append(Path(explicit))
+    try:
+        located = ctypes.util.find_library("spinapi64")
+    except Exception:
+        located = None
+    if located:
+        found.append(Path(located))
+    system_root = os.environ.get("SystemRoot") or os.environ.get("windir")
+    if system_root:
+        found.append(Path(system_root) / "System32" / "spinapi64.dll")
+    for directory in ("lib", "lib64"):
+        found.append(Path("C:/SpinCore/SpinAPI") / directory / "spinapi64.dll")
+
+    unique: list[Path] = []
+    for path in found:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def ensure_usb_only_copy(
+    output: str | os.PathLike[str],
+    candidates: Iterable[str | os.PathLike[str]] | None = None,
+    *,
+    source: str | os.PathLike[str] | None = None,
+) -> tuple[Path, Path | None]:
+    """Make sure the USB-only copy ``output`` exists; return ``(output, source_used)``.
+
+    An existing ``output`` is left alone (``source_used`` is ``None``). Otherwise the
+    first candidate that ``patch_spinapi`` accepts is used; ``candidates`` defaults to
+    ``installed_spinapi_candidates(source)``. The candidates are only read. If none
+    is accepted a ``SpinapiCopyError`` lists every path tried and why it was rejected.
+    """
+    target = Path(output).expanduser().resolve()
+    if target.exists():
+        return target, None
+
+    paths: Sequence[Path] = (
+        [Path(c) for c in candidates]
+        if candidates is not None
+        else installed_spinapi_candidates(source)
+    )
+    attempts: list[str] = []
+    for candidate in paths:
+        if not candidate.is_file():
+            attempts.append(f"  {candidate}: not found")
+            continue
+        try:
+            patch_spinapi(candidate, target)
+        except (RuntimeError, OSError) as exc:
+            attempts.append(f"  {candidate}: rejected ({exc})")
+            continue
+        return target, candidate.resolve()
+
+    listing = "\n".join(attempts) if attempts else "  (no candidate paths)"
+    raise SpinapiCopyError(
+        f"Cannot create the USB-only SpinAPI copy {target}; no installed SpinAPI "
+        f"20171214 DLL was accepted:\n{listing}\n"
+        "Pass the DLL explicitly with `python -m pulseblaster.spinapi_patch "
+        "<spinapi64.dll> <output>`."
+    )
 
 
 def main() -> None:
