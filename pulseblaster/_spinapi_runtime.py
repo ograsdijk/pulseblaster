@@ -1,4 +1,13 @@
-"""Control how the Python spinapi wrapper resolves the native Windows DLL."""
+"""Control which native Windows DLL the Python spinapi wrapper uses.
+
+By default nothing is overridden: the PyPI ``spinapi`` package loads
+``spinapi64.dll`` through the normal Windows DLL search on its first call.
+
+A different DLL (e.g. the USB-only copy made by ``pulseblaster.spinapi_patch``)
+is used only when explicitly requested, via ``use_spinapi_dll()``, the
+``spinapi_dll`` argument of ``PulseBlaster``, or ``PULSEBLASTER_SPINAPI_DLL``.
+The installed SpinAPI DLL is never modified.
+"""
 
 from __future__ import annotations
 
@@ -9,46 +18,38 @@ import sys
 from pathlib import Path
 
 SPINAPI_DLL_ENV = "PULSEBLASTER_SPINAPI_DLL"
-USB_ONLY_DLL_NAME = "spinapi64_usb_only.dll"
-VENDORED_USB_ONLY_DLL = Path(__file__).with_name("_vendor") / USB_ONLY_DLL_NAME
 
 _configured_dll: Path | None = None
 
 
-def configure_spinapi_runtime() -> Path | None:
-    """Load an explicit SpinAPI DLL before the wrapper performs its normal lookup.
+def use_spinapi_dll(path: str | os.PathLike[str]) -> Path | None:
+    """Load SpinAPI from ``path`` instead of the system ``spinapi64.dll``.
 
-    On Windows the PyPI ``spinapi`` package calls
-    ``ctypes.cdll.LoadLibrary("spinapi64.dll")`` and therefore relies on the
-    process-wide Windows DLL search path. CeNTREX uses a USB-only patched DLL
-    that skips SpinAPI's legacy PCI/WinDriver scan.
-
-    Resolution order:
-      1. ``PULSEBLASTER_SPINAPI_DLL`` when explicitly set.
-      2. ``pulseblaster/_vendor/spinapi64_usb_only.dll`` when present.
-      3. No override; let the upstream spinapi package use its normal behavior.
-
-    Returns the absolute path to the explicitly loaded DLL, or ``None`` when no
-    override is active.
+    Must be called before the first SpinAPI call in this process; the wrapper
+    loads its DLL once and keeps it. Calling again with the same path is a
+    no-op. Does nothing (returns ``None``) outside Windows.
     """
     global _configured_dll
 
     if sys.platform != "win32":
         return None
 
-    configured = os.environ.get(SPINAPI_DLL_ENV)
-    if configured:
-        dll_path = Path(configured).expanduser().resolve()
-        if not dll_path.is_file():
-            raise FileNotFoundError(
-                f"{SPINAPI_DLL_ENV} points to a missing SpinAPI DLL: {dll_path}"
-            )
-    elif VENDORED_USB_ONLY_DLL.is_file():
-        dll_path = VENDORED_USB_ONLY_DLL.resolve()
-    else:
-        return None
+    dll_path = Path(path).expanduser().resolve()
+    if _configured_dll is not None:
+        if dll_path == _configured_dll:
+            return dll_path
+        raise RuntimeError(
+            f"SpinAPI is already using {_configured_dll}; cannot switch to {dll_path}"
+        )
+    if not dll_path.is_file():
+        raise FileNotFoundError(f"SpinAPI DLL not found: {dll_path}")
 
     spinapi_impl = importlib.import_module("spinapi.spinapi")
+    if hasattr(spinapi_impl, "_spinapi"):
+        raise RuntimeError(
+            "SpinAPI already loaded the system DLL; select the DLL before the first "
+            "SpinAPI call"
+        )
     native = ctypes.cdll.LoadLibrary(str(dll_path))
 
     # The public functions imported by ``spinapi`` retain the globals of the
@@ -63,6 +64,17 @@ def configure_spinapi_runtime() -> Path | None:
 
     _configured_dll = dll_path
     return dll_path
+
+
+def configure_spinapi_runtime() -> Path | None:
+    """Apply ``PULSEBLASTER_SPINAPI_DLL`` if it is set; otherwise change nothing."""
+    configured = os.environ.get(SPINAPI_DLL_ENV)
+    if not configured:
+        return None
+    try:
+        return use_spinapi_dll(configured)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"{SPINAPI_DLL_ENV}: {exc}") from exc
 
 
 def configured_spinapi_dll() -> Path | None:

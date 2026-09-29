@@ -1,4 +1,4 @@
-"""Create the CeNTREX USB-only SpinAPI 20171214 DLL from a SpinCore DLL."""
+"""Write a USB-only copy of the SpinAPI 20171214 DLL; the source is never modified."""
 
 from __future__ import annotations
 
@@ -13,15 +13,12 @@ PATCH_OFFSET = 0x9974
 ORIGINAL_BYTES = bytes.fromhex("B9 E8 10 00 00 E8 A2 48 00 00")
 PATCHED_BYTES = bytes.fromhex("33 C0 90 90 90 90 90 90 90 90")
 
-DEFAULT_OUTPUT = Path(__file__).with_name("_vendor") / "spinapi64_usb_only.dll"
-
-
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def patch_spinapi(source: Path, output: Path = DEFAULT_OUTPUT) -> Path:
-    """Patch a known SpinAPI 20171214 DLL and write a USB-only copy.
+def patch_spinapi(source: Path, output: Path) -> Path:
+    """Write a USB-only copy of a known SpinAPI 20171214 DLL to ``output``.
 
     The patch replaces the call to ``os_count_boards(0x10E8)`` at the start of
     ``pb_count_boards()`` with ``eax = 0``. SpinAPI's existing USB enumeration
@@ -29,6 +26,8 @@ def patch_spinapi(source: Path, output: Path = DEFAULT_OUTPUT) -> Path:
 
     Only the exact CeNTREX-tested original DLL (or an already-patched copy) is
     accepted. Unknown binaries are rejected rather than patched heuristically.
+    ``source`` is only read. ``output`` must be a new file or an earlier
+    USB-only copy, so an installed SpinAPI DLL is never overwritten.
     """
     source = source.expanduser().resolve()
     output = output.expanduser().resolve()
@@ -60,13 +59,14 @@ def patch_spinapi(source: Path, output: Path = DEFAULT_OUTPUT) -> Path:
             f"{patched_digest}"
         )
 
+    if output == source:
+        raise RuntimeError("Refusing to write over the source DLL; choose another output.")
+    if output.exists() and sha256(output.read_bytes()) != PATCHED_SHA256:
+        raise RuntimeError(
+            f"Refusing to overwrite {output}: it is not a USB-only SpinAPI copy."
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
-    if source != output:
-        output.write_bytes(patched)
-    elif digest == PATCHED_SHA256:
-        pass
-    else:
-        raise RuntimeError("Refusing to patch the source DLL in place.")
+    output.write_bytes(patched)
 
     return output
 
@@ -74,17 +74,13 @@ def patch_spinapi(source: Path, output: Path = DEFAULT_OUTPUT) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a USB-only SpinAPI 20171214 DLL that skips the legacy "
-            "PCI/WinDriver scan responsible for the CeNTREX startup freeze."
+            "Write a USB-only copy of the SpinAPI 20171214 DLL that skips the "
+            "legacy PCI/WinDriver scan responsible for the CeNTREX startup freeze. "
+            "The source DLL is not modified."
         )
     )
     parser.add_argument("source", type=Path, help="Path to the original spinapi64.dll")
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT,
-        help=f"Output path (default: {DEFAULT_OUTPUT})",
-    )
+    parser.add_argument("output", type=Path, help="Path of the USB-only copy to write")
     args = parser.parse_args()
 
     output = patch_spinapi(args.source, args.output)

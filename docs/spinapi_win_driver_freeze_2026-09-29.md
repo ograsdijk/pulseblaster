@@ -163,41 +163,49 @@ Only then was the USB-only patch genuinely being tested. With that DLL loaded, t
 
 ## Repository-managed fix
 
-The preferred setup is not to modify `C:\\Windows\\System32` globally.
+The preferred setup is not to modify `C:\\Windows\\System32` or the SpinAPI installation at all.
+By default `pulseblaster` loads the installed `spinapi64.dll` unchanged. The USB-only DLL is a
+separate copy that is used only when explicitly selected.
 
-This repository supports a local runtime override. Generate the validated DLL from either the exact original SpinAPI 20171214 DLL or an already validated patched copy:
+Write the copy from either the exact original SpinAPI 20171214 DLL or an already validated
+patched DLL. The source is only read; the output must be a new file (or an earlier USB-only copy):
 
 ```powershell
-python -m pulseblaster.spinapi_patch "C:\\path\\to\\spinapi64.dll"
+python -m pulseblaster.spinapi_patch "C:\\path\\to\\spinapi64.dll" "C:\\path\\to\\spinapi64_usb_only.dll"
 ```
 
-During migration on the acquisition PC, the currently patched `C:\\Windows\\System32\\spinapi64.dll` can be used as the source. The patcher recognizes its validated SHA-256 and copies it without changing it again.
+During migration on the acquisition PC, the currently patched `C:\\Windows\\System32\\spinapi64.dll`
+can be used as the source. The patcher recognizes its validated SHA-256 and copies it unchanged.
 
 The patcher:
 
-1. requires the exact validated original SHA-256;
+1. requires the exact validated original (or patched) SHA-256;
 2. verifies the expected bytes at file offset `0x9974`;
 3. applies only the ten-byte PCI-scan bypass;
-4. verifies the complete patched SHA-256; and
-5. writes `pulseblaster/_vendor/spinapi64_usb_only.dll`.
+4. verifies the complete patched SHA-256;
+5. refuses to write over the source or over any file that is not already a USB-only copy; and
+6. writes the copy to the given output path.
 
-The DLL is deliberately not committed to this public repository. The runtime loader selects DLLs in this order:
+The DLL is deliberately not committed to this public repository. The copy is used only when
+selected before the first SpinAPI call in the process, by one of:
 
-1. `PULSEBLASTER_SPINAPI_DLL`, if set;
-2. `pulseblaster/_vendor/spinapi64_usb_only.dll`, if present;
-3. otherwise the normal upstream `spinapi` DLL lookup.
+1. `PulseBlaster(..., spinapi_dll=path)`;
+2. `pulseblaster.use_spinapi_dll(path)`; or
+3. `PULSEBLASTER_SPINAPI_DLL`, set before importing `pulseblaster`.
 
-This lets the experiment use an explicit repo-controlled DLL without modifying the global SpinAPI installation.
+Otherwise the normal upstream `spinapi` DLL lookup is used. The CeNTREX stack selects the copy
+through the PulseBlaster device configuration.
 
 ## Verification
 
-After generating the local DLL, start a fresh Python process:
+After generating the copy, start a fresh Python process:
 
 ```python
 import time
 import pulseblaster
 import spinapi
 
+pulseblaster.use_spinapi_dll(r"C:\\path\\to\\spinapi64_usb_only.dll")
 print(spinapi.pb_get_version())
 
 t0 = time.perf_counter()
@@ -206,14 +214,6 @@ print("elapsed:", time.perf_counter() - t0)
 ```
 
 The first board count should no longer exhibit the approximately 12 second system freeze.
-
-For an explicit path instead of the repo-local DLL:
-
-```powershell
-$env:PULSEBLASTER_SPINAPI_DLL = "C:\\path\\to\\spinapi64_usb_only.dll"
-```
-
-Set that environment variable before importing `pulseblaster`.
 
 ## Limitations
 
@@ -225,11 +225,9 @@ The HighFinesse device remains connected and usable; no change to its driver or 
 
 ## Rollback
 
-To stop using the repository override:
+To stop using the USB-only copy, stop selecting it (drop the `spinapi_dll` setting and unset
+`PULSEBLASTER_SPINAPI_DLL`, if configured). The upstream Python `spinapi` package then uses its
+normal Windows DLL lookup. The copy itself can be deleted.
 
-- remove `pulseblaster/_vendor/spinapi64_usb_only.dll`; and
-- unset `PULSEBLASTER_SPINAPI_DLL`, if configured.
-
-The upstream Python `spinapi` package will then return to its normal Windows DLL lookup.
-
-If the global System32 DLL was changed during diagnosis, restore the backed-up original SpinAPI DLL after confirming the repo-local override works.
+If the global System32 DLL was changed during diagnosis, restore the backed-up original SpinAPI
+DLL after confirming the explicitly selected copy works.

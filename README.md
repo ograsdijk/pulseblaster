@@ -203,22 +203,27 @@ validate_sequence(sequence.instructions, profile=ESR_PRO_250)
 
 ### Windows SpinAPI runtime
 
+By default `pulseblaster` uses whatever `spinapi64.dll` the upstream `spinapi` wrapper
+finds through the normal Windows DLL search, and never modifies it.
+
 On the CeNTREX Windows acquisition computer, SpinAPI 20171214's legacy PCI/WinDriver
 scan caused an approximately 12 second system freeze before USB board discovery. For
-USB-only PulseBlaster systems, generate the validated local DLL from the original
-SpinCore `spinapi64.dll`:
+USB-only PulseBlaster systems, write a USB-only *copy* of the original SpinCore DLL
+(the source file is only read):
 
 ```powershell
-python -m pulseblaster.spinapi_patch "C:\path\to\original\spinapi64.dll"
+python -m pulseblaster.spinapi_patch "C:\path\to\original\spinapi64.dll" "C:\path\to\spinapi64_usb_only.dll"
 ```
 
-This writes `pulseblaster/_vendor/spinapi64_usb_only.dll`. On Windows, importing
-`pulseblaster` will load that DLL explicitly before the upstream `spinapi` wrapper
-performs its normal system-wide lookup. The DLL itself is not committed to this public
-repository.
+Then opt in to it, before the first SpinAPI call in the process, in one of three ways:
 
-An explicit DLL can instead be selected with `PULSEBLASTER_SPINAPI_DLL`. The patch is
-USB-only and must not be used on a computer that needs a SpinCore PCI/PCIe board.
+```python
+PulseBlaster(0, profile="ESR_PRO_250", spinapi_dll=r"C:\path\to\spinapi64_usb_only.dll")
+pulseblaster.use_spinapi_dll(r"C:\path\to\spinapi64_usb_only.dll")
+```
+
+or set `PULSEBLASTER_SPINAPI_DLL` before importing `pulseblaster`. The patch is USB-only
+and must not be used on a computer that needs a SpinCore PCI/PCIe board.
 
 See [the 2026-09-29 incident report](docs/spinapi_win_driver_freeze_2026-09-29.md) for
 the diagnosis, validated SHA-256 hashes, exact byte patch, verification, and rollback.

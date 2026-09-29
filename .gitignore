@@ -6,8 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-# Locally generated SpinCore runtime (do not commit vendor DLLs)
-pulseblaster/_vendor/*.dll
 
 # Distribution / packaging
 .Python
