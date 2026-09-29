@@ -1,5 +1,7 @@
 """Tests for the PulseBlaster device wrapper (spinapi calls are mocked)."""
 
+import ctypes
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 import pytest
@@ -65,6 +67,18 @@ def test_status_is_structured(pb):
         status = pb.status
 
     assert status == PulseBlasterStatus(raw=0b1100, state="waiting")
+
+
+def test_status_reads_native_int_not_wrapper_dict(monkeypatch):
+    # The PyPI wrapper returns {"stopped": ..., ...}; the native call gives the int.
+    import pulseblaster.device as device
+
+    native = SimpleNamespace(pb_read_status=lambda: -1)
+    monkeypatch.setattr(device._spinapi_impl, "_spinapi", native, raising=False)
+    monkeypatch.setattr(device._spinapi_impl, "_checkloaded", lambda: None)
+
+    assert device.pb_read_status() == -1
+    assert native.pb_read_status.restype is ctypes.c_int
 
 
 @pytest.mark.parametrize(

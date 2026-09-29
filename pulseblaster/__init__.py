@@ -9,6 +9,7 @@ This package provides tools for:
 """
 
 from . import generate_pulses, profiles, program_cache
+from ._spinapi_runtime import configure_spinapi_runtime, use_spinapi_dll
 from .data_structures import (
     CompilationReport,
     Instruction,
@@ -28,6 +29,10 @@ from .validation import (
     validate_sequence,
 )
 
+# Opt-in only: apply PULSEBLASTER_SPINAPI_DLL if set. Without it the upstream
+# spinapi wrapper loads the installed spinapi64.dll as usual on its first call.
+configure_spinapi_runtime()
+
 __all__ = [
     "generate_pulses",
     "profiles",
@@ -38,6 +43,7 @@ __all__ = [
     "OptimizationLevel",
     "CompilationReport",
     "PulseBlaster",
+    "use_spinapi_dll",
     "PulseBlasterStatus",
     "plot_sequence",
     "code_to_instructions",

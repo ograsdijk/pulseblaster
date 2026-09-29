@@ -1,11 +1,14 @@
 """PulseBlaster device interface for programming and controlling the hardware."""
 
+import ctypes
+import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import RLock
 from typing import Literal
 
+import spinapi.spinapi as _spinapi_impl
 from spinapi import (
     PULSE_PROGRAM,
     ns,
@@ -16,7 +19,6 @@ from spinapi import (
     pb_get_version,
     pb_init,
     pb_inst_pbonly,
-    pb_read_status,
     pb_reset,
     pb_select_board,
     pb_start,
@@ -25,8 +27,22 @@ from spinapi import (
     pb_stop_programming,
 )
 
+from ._spinapi_runtime import use_spinapi_dll
 from .data_structures import Instruction
 from .validation import ESR_PRO_250, BoardProfile, get_board_profile, validate_sequence
+
+
+def pb_read_status() -> int:
+    """SpinAPI's status word as the native signed int.
+
+    The PyPI wrapper's ``pb_read_status`` decodes it into a dict of four flags,
+    which hides the negative error return and any bits above the low four.
+    """
+    _spinapi_impl._checkloaded()
+    native = _spinapi_impl._spinapi.pb_read_status
+    native.restype = ctypes.c_int
+    return int(native())
+
 
 PulseBlasterState = Literal["idle", "stopped", "reset", "running", "waiting", "unknown"]
 
@@ -73,9 +89,14 @@ class PulseBlaster:
         self,
         board_number: int,
         profile: BoardProfile | str = ESR_PRO_250,
+        spinapi_dll: str | os.PathLike[str] | None = None,
     ) -> None:
+        """``spinapi_dll`` selects a SpinAPI DLL other than the installed one (e.g. a
+        USB-only copy); it must be given before any other SpinAPI use in the process."""
         self.board_number = int(board_number)
         self.profile = get_board_profile(profile)
+        if spinapi_dll is not None:
+            use_spinapi_dll(spinapi_dll)
 
         with _SPINAPI_LOCK:
             self._select_board(error_cls=ConnectionError)
