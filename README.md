@@ -208,8 +208,21 @@ finds through the normal Windows DLL search, and never modifies it.
 
 On the CeNTREX Windows acquisition computer, SpinAPI 20171214's legacy PCI/WinDriver
 scan caused an approximately 12 second system freeze before USB board discovery. For
-USB-only PulseBlaster systems, write a USB-only *copy* of the original SpinCore DLL
-(the source file is only read):
+USB-only PulseBlaster systems, use a USB-only *copy* of the original SpinCore DLL
+(the source file is only read, never modified and never loaded):
+
+```python
+from pulseblaster.spinapi_patch import ensure_usb_only_copy
+
+# Creates the copy (atomically) if it is missing, from the first installed
+# spinapi64.dll found (PATH, %SystemRoot%\System32, C:\SpinCore\SpinAPI\lib*)
+# that is the known original or an already-patched build.
+path, source_used = ensure_usb_only_copy(r"C:\path\to\spinapi64_usb_only.dll")
+```
+
+An existing copy is left alone. If no candidate is accepted, a `SpinapiCopyError`
+lists every path tried and why it was rejected. The command line does the same for one
+explicit source:
 
 ```powershell
 python -m pulseblaster.spinapi_patch "C:\path\to\original\spinapi64.dll" "C:\path\to\spinapi64_usb_only.dll"
