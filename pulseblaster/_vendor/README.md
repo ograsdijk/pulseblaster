@@ -2,10 +2,11 @@
 
 This directory is intentionally kept free of committed SpinCore binaries.
 
-For the CeNTREX USB PulseBlaster setup, generate the validated USB-only DLL with:
+For the CeNTREX USB PulseBlaster setup, generate the validated USB-only DLL from
+either the exact original SpinAPI 20171214 DLL or the already validated patched DLL:
 
 ```powershell
-python -m pulseblaster.spinapi_patch "C:\\path\\to\\original\\spinapi64.dll"
+python -m pulseblaster.spinapi_patch "C:\\path\\to\\spinapi64.dll"
 ```
 
 The command writes `spinapi64_usb_only.dll` here. On Windows, importing
