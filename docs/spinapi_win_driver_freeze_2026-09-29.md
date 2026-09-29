@@ -165,11 +165,13 @@ Only then was the USB-only patch genuinely being tested. With that DLL loaded, t
 
 The preferred setup is not to modify `C:\\Windows\\System32` globally.
 
-This repository supports a local runtime override. Generate the validated DLL from an original SpinAPI 20171214 DLL:
+This repository supports a local runtime override. Generate the validated DLL from either the exact original SpinAPI 20171214 DLL or an already validated patched copy:
 
 ```powershell
-python -m pulseblaster.spinapi_patch "C:\\path\\to\\original\\spinapi64.dll"
+python -m pulseblaster.spinapi_patch "C:\\path\\to\\spinapi64.dll"
 ```
+
+During migration on the acquisition PC, the currently patched `C:\\Windows\\System32\\spinapi64.dll` can be used as the source. The patcher recognizes its validated SHA-256 and copies it without changing it again.
 
 The patcher:
 
