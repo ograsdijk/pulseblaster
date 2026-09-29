@@ -16,6 +16,7 @@ import importlib
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 SPINAPI_DLL_ENV = "PULSEBLASTER_SPINAPI_DLL"
 
@@ -44,7 +45,7 @@ def use_spinapi_dll(path: str | os.PathLike[str]) -> Path | None:
     if not dll_path.is_file():
         raise FileNotFoundError(f"SpinAPI DLL not found: {dll_path}")
 
-    spinapi_impl = importlib.import_module("spinapi.spinapi")
+    spinapi_impl: Any = importlib.import_module("spinapi.spinapi")
     if hasattr(spinapi_impl, "_spinapi"):
         raise RuntimeError(
             "SpinAPI already loaded the system DLL; select the DLL before the first "
